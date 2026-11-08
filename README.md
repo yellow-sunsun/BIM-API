@@ -9,6 +9,8 @@ Revit 插件，讓助教自動比對學生模型與標準模型的差異，並�
 ### 第一次測試
 - 新增 `Class1.cs`
 - 功能：讀取柱座標
+- <img width="862" height="475" alt="image1" src="https://github.com/user-attachments/assets/95e57fc8-ef3e-4bf1-b05f-d3a301c3fd24" />
+
 
 ### 第二次測試
 - 修改 `Class1.cs`
