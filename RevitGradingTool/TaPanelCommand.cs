@@ -1,6 +1,7 @@
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using System.Windows.Forms;
 
 namespace RevitGradingTool
 {
@@ -12,13 +13,36 @@ namespace RevitGradingTool
             ref string message,
             ElementSet elements)
         {
+            Document doc = commandData.Application.ActiveUIDocument.Document;
+
+            // 建立 ExternalEvent
+            var highlightEvent = new HighlightEvent();
+            var exEvent = ExternalEvent.Create(highlightEvent);
+
             var panel = new TaPanel();
 
-            // 標色功能留到第五週接上，這週先顯示面板
+            // 標色功能：透過 ExternalEvent 呼叫
             panel.HighlightRequested += (s, student) =>
             {
-                TaskDialog.Show("標色",
-                    $"即將標色【{student.Name}】的 {student.Errors.Count} 個錯誤\n（標色功能下週完成）");
+                highlightEvent.Errors = student.Errors;
+                highlightEvent.Standard = panel.StandardSnapshot;
+                exEvent.Raise();
+            };
+
+            // Excel 匯出
+            panel.ExportRequested += (s, e) =>
+            {
+                var dlg = new SaveFileDialog
+                {
+                    Title = "匯出 Excel 報告",
+                    Filter = "CSV files|*.csv",
+                    FileName = "BIM作業批改報告.csv"
+                };
+                if (dlg.ShowDialog() != DialogResult.OK) return;
+
+                var exporter = new ExcelExporter();
+                exporter.Export(panel.Students, dlg.FileName);
+                TaskDialog.Show("匯出完成", $"Excel 已儲存至：\n{dlg.FileName}");
             };
 
             panel.Show();

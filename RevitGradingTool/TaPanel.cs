@@ -27,6 +27,8 @@ namespace RevitGradingTool
         // 當助教點「標色」時觸發
         public event EventHandler<StudentResult> HighlightRequested;
 
+        public event EventHandler ExportRequested;
+
         public TaPanel()
         {
             InitializeUI();
@@ -119,6 +121,16 @@ namespace RevitGradingTool
             this.Controls.Add(studentListBox);
             this.Controls.Add(listLabel);
             this.Controls.Add(loadStudentsBtn);
+            // Excel 匯出按鈕
+            var exportBtn = new Button
+            {
+                Text = "? 匯出 Excel 報告",
+                Dock = DockStyle.Top,
+                Height = 36,
+                BackColor = System.Drawing.Color.LightGreen
+            };
+            exportBtn.Click += (s, e) => ExportRequested?.Invoke(this, e);
+            this.Controls.Add(exportBtn);
             this.Controls.Add(loadStandardBtn);
         }
 
