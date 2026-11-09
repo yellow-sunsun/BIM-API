@@ -45,7 +45,7 @@ namespace RevitGradingTool
             // 載入標準模型按鈕
             loadStandardBtn = new Button
             {
-                Text = "? 載入標準模型 JSON",
+                Text = "載入標準模型 JSON",
                 Dock = DockStyle.Top,
                 Height = 36
             };
@@ -54,7 +54,7 @@ namespace RevitGradingTool
             // 批次載入學生 JSON 按鈕
             loadStudentsBtn = new Button
             {
-                Text = "? 批次載入學生 JSON",
+                Text = "批次載入學生 JSON",
                 Dock = DockStyle.Top,
                 Height = 36,
                 Enabled = false
@@ -89,7 +89,7 @@ namespace RevitGradingTool
             // 標色按鈕
             highlightBtn = new Button
             {
-                Text = "? 在模型上標色此學生的錯誤",
+                Text = "在模型上標色此學生的錯誤",
                 Dock = DockStyle.Top,
                 Height = 36,
                 Enabled = false,
@@ -124,7 +124,7 @@ namespace RevitGradingTool
             // Excel 匯出按鈕
             var exportBtn = new Button
             {
-                Text = "? 匯出 Excel 報告",
+                Text = "匯出 Excel 報告",
                 Dock = DockStyle.Top,
                 Height = 36,
                 BackColor = System.Drawing.Color.LightGreen

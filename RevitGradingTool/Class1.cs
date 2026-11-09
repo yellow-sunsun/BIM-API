@@ -6,11 +6,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Xml;
 
 namespace RevitGradingTool
 {
-    // 單一構件的資料結構
     public class ElementSnapshot
     {
         public int Id { get; set; }
@@ -25,7 +23,6 @@ namespace RevitGradingTool
         public double Depth { get; set; }
     }
 
-    // 整份模型快照
     public class ModelSnapshot
     {
         public string ModelName { get; set; }
@@ -41,21 +38,32 @@ namespace RevitGradingTool
             ElementSet elements)
         {
             Document doc = commandData.Application.ActiveUIDocument.Document;
+            var snapshot = ParseDocument(doc);
 
-            ModelSnapshot snapshot = new ModelSnapshot
-            {
-                ModelName = doc.Title
-            };
+            string json = JsonConvert.SerializeObject(snapshot, Newtonsoft.Json.Formatting.Indented);
+            string path = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                doc.Title + "_snapshot.json");
+            File.WriteAllText(path, json);
 
-            // 要蒐集的構件類別
+            TaskDialog.Show("\u532f\u51fa\u5b8c\u6210",
+                $"\u5171\u532f\u51fa {snapshot.Elements.Count} \u500b\u69cb\u4ef6\n\u5b58\u6a94\u4f4d\u7f6e\uff1a{path}");
+
+            return Result.Succeeded;
+        }
+
+        public static ModelSnapshot ParseDocument(Document doc)
+        {
+            var snapshot = new ModelSnapshot { ModelName = doc.Title };
+
             var categories = new[]
             {
-                BuiltInCategory.OST_StructuralColumns, // 柱
-                BuiltInCategory.OST_StructuralFraming,  // 梁
-                BuiltInCategory.OST_Floors,             // 樓板
-                BuiltInCategory.OST_Walls,              // 牆
-                BuiltInCategory.OST_Doors,              // 門
-                BuiltInCategory.OST_Windows             // 窗
+                BuiltInCategory.OST_StructuralColumns,
+                BuiltInCategory.OST_StructuralFraming,
+                BuiltInCategory.OST_Floors,
+                BuiltInCategory.OST_Walls,
+                BuiltInCategory.OST_Doors,
+                BuiltInCategory.OST_Windows
             };
 
             foreach (var cat in categories)
@@ -72,7 +80,6 @@ namespace RevitGradingTool
                         Category = el.Category?.Name ?? "Unknown"
                     };
 
-                    // 取得座標（點構件用 LocationPoint，線構件用 LocationCurve 中點）
                     if (el.Location is LocationPoint lp)
                     {
                         snap.X = lp.Point.X * 304.8;
@@ -87,17 +94,11 @@ namespace RevitGradingTool
                         snap.Z = mid.Z * 304.8;
                     }
 
-                    // 族群類型名稱
                     if (el is FamilyInstance fi)
-                    {
                         snap.FamilyType = fi.Symbol?.Name ?? "";
-                    }
                     else
-                    {
                         snap.FamilyType = el.Name;
-                    }
 
-                    // 材質（取第一個材質）
                     var matIds = el.GetMaterialIds(false);
                     if (matIds.Count > 0)
                     {
@@ -105,7 +106,6 @@ namespace RevitGradingTool
                         snap.Material = mat?.Name ?? "";
                     }
 
-                    // 尺寸參數
                     snap.Width = GetParamMM(el, BuiltInParameter.GENERIC_WIDTH);
                     snap.Height = GetParamMM(el, BuiltInParameter.GENERIC_HEIGHT);
                     snap.Depth = GetParamMM(el, BuiltInParameter.GENERIC_DEPTH);
@@ -114,20 +114,10 @@ namespace RevitGradingTool
                 }
             }
 
-            // 存成 JSON
-            string json = JsonConvert.SerializeObject(snapshot, Newtonsoft.Json.Formatting.Indented);
-            string path = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                doc.Title + "_snapshot.json");
-            File.WriteAllText(path, json);
-
-            TaskDialog.Show("匯出完成",
-                $"共匯出 {snapshot.Elements.Count} 個構件\n存檔位置：{path}");
-
-            return Result.Succeeded;
+            return snapshot;
         }
 
-        private double GetParamMM(Element el, BuiltInParameter bip)
+        private static double GetParamMM(Element el, BuiltInParameter bip)
         {
             Parameter p = el.get_Parameter(bip);
             if (p != null && p.HasValue && p.StorageType == StorageType.Double)

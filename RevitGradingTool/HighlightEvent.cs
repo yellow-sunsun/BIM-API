@@ -8,13 +8,19 @@ namespace RevitGradingTool
     {
         public List<CompareError> Errors { get; set; }
         public ModelSnapshot Standard { get; set; }
-        private Document _doc;
+
+        private HighlightManager _manager;
 
         public void Execute(UIApplication app)
         {
-            _doc = app.ActiveUIDocument.Document;
-            var manager = new HighlightManager(_doc);
-            manager.Highlight(Errors, Standard);
+            var doc = app.ActiveUIDocument.Document;
+
+            if (_manager == null)
+                _manager = new HighlightManager(doc);
+
+            // 先清除上一位學生的標色，再標新的
+            _manager.ClearAll();
+            _manager.Highlight(Errors, Standard);
         }
 
         public string GetName() => "HighlightEvent";
