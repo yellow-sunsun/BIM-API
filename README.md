@@ -64,6 +64,67 @@ Revit 插件，讓助教自動比對學生模型與標準模型的差異，並�
 
 - 輸出檔案：`BIM作業批改報告.csv`
 
+### 第六次測試: debug
+- 問題 1：按鈕文字顯示「?」
+
+<img width="245" height="289" alt="Image" src="https://github.com/user-attachments/assets/2a1348fc-0ff4-40f8-aa3a-45714066cd09" /> ➡️ 
+<img width="268" height="289" alt="Image" src="https://github.com/user-attachments/assets/fa9a5705-096a-4892-99ec-1b023b48d4b0" />
+
+- 問題 2：批次產生所有學生 JSON，不用每個學生都Add-In -> ExportSnapshot
+
+    新增 `BatchExportCommand.cs`
+
+    修改 `Class1.cs`
+
+    Add-In Manager → 執行 `BatchExportCommand`，一次選擇所有學生.rvt檔
+
+<img width="395" height="369" alt="Image" src="https://github.com/user-attachments/assets/97171669-76b9-42ce-acf5-e66ffac693d5" />
+<img width="390" height="369" alt="Image" src="https://github.com/user-attachments/assets/de5ea6f7-6db2-4415-88e4-67f32842b60f" />
+
+<img width="665" alt="Image" src="https://github.com/user-attachments/assets/2bf46e35-0694-4fbf-8c5d-b68b58d59e44" />
+
+Add-In Manager → 執行 `TaPanelCommand`
+
+<img width="865" height="455" alt="Image" src="https://github.com/user-attachments/assets/2f5a2aa5-fdc6-407e-a5d5-58cea5bd77a1" />
+
+- 問題 3：切換學生時清除前一位標色
+
+    看學生一檔案後想看學生二，錯誤會疊加
+
+<img width="155" height="149" alt="Image" src="https://github.com/user-attachments/assets/7e7cb58c-b87d-4767-a353-a527f4071f1a" />
+
+修改 `HighlightEvent.cs`
+
+<img width="865" height="552" alt="Image" src="https://github.com/user-attachments/assets/5ad7a630-a2f5-4ec0-8312-b2168b9eec45" />
+
+- 問題 4：學生多餘構建沒有顯示出來，用箭頭指出多餘位置
+    修改 `HighlightManager.cs`
+
+<img width="331" height="255" alt="Image" src="https://github.com/user-attachments/assets/ec0be9e7-8a2c-4f2b-a907-84240471de26" />
+<img width="458" height="249" alt="Image" src="https://github.com/user-attachments/assets/08d7ed00-0855-4475-b174-7c5507afc5c7" />
+
+學生作業 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ➡️ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 老師看到
+
+### 第七次測試
+- 問題: 少一個板(學生5)沒顯示出來
+<img width="273" height="275" alt="Image" src="https://github.com/user-attachments/assets/ec85ef15-c1da-4c93-8a96-24ad46b90cb9" />
+<img width="523" height="271" alt="Image" src="https://github.com/user-attachments/assets/6456980f-fe14-4be6-9df9-b30a7a24b58c" />
+
+學生作業 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ➡️ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 老師看到
+
+修改 `HighlightManager.cs`、`HighlightEvent.cs`、`Class1.cs`、`ComparisonEngine.cs`
+
+<img width="529" height="375" alt="Image" src="https://github.com/user-attachments/assets/ec6bdc99-620e-4c93-81cc-5179037717d6" />
+
+- 多測試學生6: 位置偏移不應該被偵測出誤差
+
+  修改`ComparisonEngine.cs`
+  
+  在 ComparisonEngine.cs 的 Compare 方法最上面加偏移校正
+  
+<img width="311" height="346" alt="Image" src="https://github.com/user-attachments/assets/08f4eb12-bb48-496e-adcf-3fa1fa01478b" /> ➡️
+<img width="333" height="344" alt="Image" src="https://github.com/user-attachments/assets/b2b31c91-d7e9-49cf-832b-bd7880c9583e" />
+
 ---
 
 ## 檔案結構
