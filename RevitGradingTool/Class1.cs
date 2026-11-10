@@ -11,7 +11,7 @@ namespace RevitGradingTool
 {
     public class ElementSnapshot
     {
-        public int Id { get; set; }
+        public long Id { get; set; }
         public string Category { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
@@ -76,7 +76,7 @@ namespace RevitGradingTool
                 {
                     var snap = new ElementSnapshot
                     {
-                        Id = el.Id.IntegerValue,
+                        Id = el.Id.Value,
                         Category = el.Category?.Name ?? "Unknown"
                     };
 
@@ -92,6 +92,41 @@ namespace RevitGradingTool
                         snap.X = mid.X * 304.8;
                         snap.Y = mid.Y * 304.8;
                         snap.Z = mid.Z * 304.8;
+                    }
+                    else
+                    {
+                        // 樓板、牆等用幾何中心
+                        var geoOpt = new Options { ComputeReferences = false };
+                        var geoElem = el.get_Geometry(geoOpt);
+
+                        if (geoElem != null)
+                        {
+                            double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
+                            double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+                            bool hasGeo = false;
+
+                            foreach (GeometryObject geoObj in geoElem)
+                            {
+                                Solid solid = geoObj as Solid;
+                                if (solid == null || solid.Volume <= 0) continue;
+
+                                foreach (Edge edge in solid.Edges)
+                                {
+                                    XYZ pt = edge.AsCurve().GetEndPoint(0);
+                                    minX = Math.Min(minX, pt.X); maxX = Math.Max(maxX, pt.X);
+                                    minY = Math.Min(minY, pt.Y); maxY = Math.Max(maxY, pt.Y);
+                                    minZ = Math.Min(minZ, pt.Z); maxZ = Math.Max(maxZ, pt.Z);
+                                    hasGeo = true;
+                                }
+                            }
+
+                            if (hasGeo)
+                            {
+                                snap.X = ((minX + maxX) / 2) * 304.8;
+                                snap.Y = ((minY + maxY) / 2) * 304.8;
+                                snap.Z = ((minZ + maxZ) / 2) * 304.8;
+                            }
+                        }
                     }
 
                     if (el is FamilyInstance fi)

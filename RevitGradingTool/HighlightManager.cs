@@ -1,4 +1,5 @@
 using Autodesk.Revit.DB;
+using System;
 using System.Collections.Generic;
 
 namespace RevitGradingTool
@@ -20,7 +21,6 @@ namespace RevitGradingTool
             {
                 tx.Start();
 
-                // 清除構件標色
                 foreach (var id in _highlightedIds)
                 {
                     var el = _doc.GetElement(id);
@@ -28,7 +28,6 @@ namespace RevitGradingTool
                         _doc.ActiveView.SetElementOverrides(id, new OverrideGraphicSettings());
                 }
 
-                // 刪除 TextNote
                 foreach (var id in _textNoteIds)
                 {
                     var el = _doc.GetElement(id);
@@ -51,7 +50,6 @@ namespace RevitGradingTool
             {
                 tx.Start();
 
-                // 取得 TextNote 類型 Id
                 var textNoteTypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
 
                 foreach (var err in errors)
@@ -60,7 +58,6 @@ namespace RevitGradingTool
 
                     if (err.Type == ErrorType.Extra)
                     {
-                        // 多餘構件：在座標位置放箭頭文字標記
                         var textNoteOptions = new TextNoteOptions
                         {
                             HorizontalAlignment = HorizontalTextAlignment.Center,
@@ -78,7 +75,11 @@ namespace RevitGradingTool
                     }
                     else
                     {
-                        // 缺少 / 屬性錯誤：在標準模型上找對應構件標色
+                        // 根據類別選容差
+                        double tol = (err.Category == "\u6a13\u677f" || err.Category == "\u7246")
+                            ? 500.0 / 304.8
+                            : 50.0 / 304.8;
+
                         var collector = new FilteredElementCollector(_doc)
                             .WhereElementIsNotElementType();
 
@@ -88,19 +89,17 @@ namespace RevitGradingTool
                             if (elPt == null) continue;
 
                             double dist = elPt.DistanceTo(position);
-                            if (dist > 50.0 / 304.8) continue;
+                            if (dist > tol) continue;
 
                             var ovr = new OverrideGraphicSettings();
 
                             if (err.Type == ErrorType.Missing)
                             {
-                                // 紅色：缺少
                                 ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
                                 ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
                             }
                             else
                             {
-                                // 橘色：屬性錯誤
                                 ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
                                 ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
                             }
@@ -121,6 +120,34 @@ namespace RevitGradingTool
             if (el.Location is LocationPoint lp) return lp.Point;
             if (el.Location is LocationCurve lc)
                 return (lc.Curve.GetEndPoint(0) + lc.Curve.GetEndPoint(1)) / 2;
+
+            // 樓板、牆等用幾何中心
+            var geoOpt = new Options { ComputeReferences = false };
+            var geoElem = el.get_Geometry(geoOpt);
+            if (geoElem != null)
+            {
+                double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
+                double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+                bool hasGeo = false;
+
+                foreach (GeometryObject geoObj in geoElem)
+                {
+                    Solid solid = geoObj as Solid;
+                    if (solid == null || solid.Volume <= 0) continue;
+                    foreach (Edge edge in solid.Edges)
+                    {
+                        XYZ pt = edge.AsCurve().GetEndPoint(0);
+                        minX = Math.Min(minX, pt.X); maxX = Math.Max(maxX, pt.X);
+                        minY = Math.Min(minY, pt.Y); maxY = Math.Max(maxY, pt.Y);
+                        minZ = Math.Min(minZ, pt.Z); maxZ = Math.Max(maxZ, pt.Z);
+                        hasGeo = true;
+                    }
+                }
+
+                if (hasGeo)
+                    return new XYZ((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+            }
+
             return null;
         }
 

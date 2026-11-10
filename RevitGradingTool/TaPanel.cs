@@ -146,7 +146,7 @@ namespace RevitGradingTool
             StandardSnapshot = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
                 System.IO.File.ReadAllText(dlg.FileName));
 
-            loadStandardBtn.Text = $"? 夹非家{System.IO.Path.GetFileName(dlg.FileName)}";
+            loadStandardBtn.Text = $"夹非家{System.IO.Path.GetFileName(dlg.FileName)}";
             loadStudentsBtn.Enabled = true;
         }
 
