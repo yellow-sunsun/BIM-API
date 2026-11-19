@@ -125,6 +125,24 @@ Add-In Manager → 執行 `TaPanelCommand`
 <img width="311" height="346" alt="Image" src="https://github.com/user-attachments/assets/08f4eb12-bb48-496e-adcf-3fa1fa01478b" /> ➡️
 <img width="333" height="344" alt="Image" src="https://github.com/user-attachments/assets/b2b31c91-d7e9-49cf-832b-bd7880c9583e" />
 
+### 第八次測試
+
+新增3層樓模型測試:
+
+<img width="362" height="662" alt="圖片11111" src="https://github.com/user-attachments/assets/b6d42b9f-b75d-4eff-8a08-9a20fe189051" />
+
+遇到問題:
+
+<img width="382" height="194" alt="圖片2222" src="https://github.com/user-attachments/assets/1904f41d-eaf2-4685-8dca-2b842b631736" />
+
+- 原因： BIM範例模型.rvt 放在同一個資料夾，程式掃到它並開啟，關閉時因為它是當前活動文件而報錯停止。
+ 
+- 解決方法： 關閉時加入判斷，如果是當前活動文件就跳過不關，程式繼續執行其他檔案。
+
+修改:`BatchExportCommand.cs` 
+
+<img width="356" height="522" alt="圖片3333" src="https://github.com/user-attachments/assets/97bb581d-3d73-4acc-8a2d-76f4edb954e1" />
+
 ---
 
 ## 檔案結構
