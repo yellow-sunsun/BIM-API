@@ -2,6 +2,7 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json;
+using System.Collections.Generic;
 using System.IO;
 using System.Windows.Forms;
 
@@ -15,14 +16,12 @@ namespace RevitGradingTool
             ref string message,
             ElementSet elements)
         {
-            // 選學生 .rvt 所在資料夾
             var folderDlg = new FolderBrowserDialog
             {
                 Description = "\u9078\u64c7\u5b58\u653e\u6240\u6709\u5b78\u751f .rvt \u7684\u8cc7\u6599\u593e"
             };
             if (folderDlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
 
-            // 選 JSON 輸出資料夾
             var outputDlg = new FolderBrowserDialog
             {
                 Description = "\u9078\u64c7 JSON \u8f38\u51fa\u8cc7\u6599\u593e"
@@ -40,6 +39,8 @@ namespace RevitGradingTool
             }
 
             var app = commandData.Application;
+            var activeDocPath = commandData.Application.ActiveUIDocument?.Document?.PathName ?? "";
+            var openedDocs = new List<Document>();
             int count = 0;
 
             foreach (string rvtPath in rvtFiles)
@@ -57,15 +58,26 @@ namespace RevitGradingTool
                 }
                 catch { continue; }
 
+                // 立刻解析存成 JSON
                 var snapshot = ExportSnapshot.ParseDocument(studentDoc);
-
                 string jsonPath = Path.Combine(outputFolder,
                     Path.GetFileNameWithoutExtension(rvtPath) + "_snapshot.json");
                 File.WriteAllText(jsonPath,
                     JsonConvert.SerializeObject(snapshot, Newtonsoft.Json.Formatting.Indented));
 
-                studentDoc.Close(false);
+                openedDocs.Add(studentDoc);
                 count++;
+            }
+
+            // 全部解析完後統一關閉，跳過當前活動文件
+            foreach (var doc in openedDocs)
+            {
+                try
+                {
+                    if (doc.PathName != activeDocPath)
+                        doc.Close(false);
+                }
+                catch { }
             }
 
             TaskDialog.Show("\u6279\u6b21\u532f\u51fa\u5b8c\u6210",
