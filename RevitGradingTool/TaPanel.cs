@@ -8,6 +8,7 @@ namespace RevitGradingTool
     {
         public string Name { get; set; }
         public string SnapshotPath { get; set; }
+        public string RvtPath { get; set; }
         public List<CompareError> Errors { get; set; } = new List<CompareError>();
     }
 
@@ -24,11 +25,8 @@ namespace RevitGradingTool
         public List<StudentResult> Students { get; private set; } = new List<StudentResult>();
         public StudentResult SelectedStudent { get; private set; }
 
-        // 當助教點「標色」時觸發
         public event EventHandler<StudentResult> HighlightRequested;
-
         public event EventHandler ExportRequested;
-
         public event EventHandler ClearRequested;
 
         public TaPanel()
@@ -38,35 +36,32 @@ namespace RevitGradingTool
 
         private void InitializeUI()
         {
-            this.Text = "BIM 作業批改系統";
+            this.Text = "BIM \u4f5c\u696d\u6279\u6539\u7cfb\u7d71";
             this.Width = 420;
             this.Height = 600;
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.TopMost = true;
 
-            // 載入標準模型按鈕
             loadStandardBtn = new Button
             {
-                Text = "載入標準模型 JSON",
+                Text = "\u8f09\u5165\u6a19\u6e96\u6a21\u578b JSON",
                 Dock = DockStyle.Top,
                 Height = 36
             };
             loadStandardBtn.Click += LoadStandardBtn_Click;
 
-            // 批次載入學生 JSON 按鈕
             loadStudentsBtn = new Button
             {
-                Text = "批次載入學生 JSON",
+                Text = "\u6279\u6b21\u8f09\u5165\u5b78\u751f JSON",
                 Dock = DockStyle.Top,
                 Height = 36,
                 Enabled = false
             };
             loadStudentsBtn.Click += LoadStudentsBtn_Click;
 
-            // 學生清單
             var listLabel = new Label
             {
-                Text = "學生清單（點選查看錯誤）",
+                Text = "\u5b78\u751f\u6e05\u55ae\uff08\u9ede\u9078\u67e5\u770b\u932f\u8aa4\uff09",
                 Dock = DockStyle.Top,
                 Height = 20
             };
@@ -79,19 +74,17 @@ namespace RevitGradingTool
             };
             studentListBox.SelectedIndexChanged += StudentListBox_SelectedIndexChanged;
 
-            // 錯誤數量標籤
             errorCountLabel = new Label
             {
-                Text = "選擇學生以查看錯誤",
+                Text = "\u9078\u64c7\u5b78\u751f\u4ee5\u67e5\u770b\u932f\u8aa4",
                 Dock = DockStyle.Top,
                 Height = 24,
                 Font = new System.Drawing.Font("Microsoft JhengHei", 9)
             };
 
-            // 標色按鈕
             highlightBtn = new Button
             {
-                Text = "在模型上標色此學生的錯誤",
+                Text = "\u5728\u6a21\u578b\u4e0a\u6a19\u8272\u6b64\u5b78\u751f\u7684\u932f\u8aa4",
                 Dock = DockStyle.Top,
                 Height = 36,
                 Enabled = false,
@@ -99,10 +92,9 @@ namespace RevitGradingTool
             };
             highlightBtn.Click += HighlightBtn_Click;
 
-            // 錯誤詳細清單
             var detailLabel = new Label
             {
-                Text = "錯誤詳細：",
+                Text = "\u932f\u8aa4\u8a73\u7d30\uff1a",
                 Dock = DockStyle.Top,
                 Height = 20
             };
@@ -115,19 +107,14 @@ namespace RevitGradingTool
                 BackColor = System.Drawing.Color.WhiteSmoke
             };
 
-            // 由下往上加（Dock.Top 是反序）
-            this.Controls.Add(errorDetailBox);
-            this.Controls.Add(detailLabel);
-            // Excel 匯出按鈕
             var exportBtn = new Button
             {
-                Text = "匯出 Excel 報告",
+                Text = "\u532f\u51fa Excel \u5831\u544a",
                 Dock = DockStyle.Top,
                 Height = 36,
                 BackColor = System.Drawing.Color.LightGreen
             };
             exportBtn.Click += (s, e) => ExportRequested?.Invoke(this, e);
-            this.Controls.Add(exportBtn);
 
             var clearBtn = new Button
             {
@@ -137,8 +124,12 @@ namespace RevitGradingTool
                 BackColor = System.Drawing.Color.LightGray
             };
             clearBtn.Click += (s, e) => ClearRequested?.Invoke(this, e);
-            this.Controls.Add(clearBtn);
 
+            // 由下往上加（Dock.Top 是反序）
+            this.Controls.Add(errorDetailBox);
+            this.Controls.Add(detailLabel);
+            this.Controls.Add(exportBtn);
+            this.Controls.Add(clearBtn);
             this.Controls.Add(highlightBtn);
             this.Controls.Add(errorCountLabel);
             this.Controls.Add(studentListBox);
@@ -151,7 +142,7 @@ namespace RevitGradingTool
         {
             var dlg = new OpenFileDialog
             {
-                Title = "選擇標準模型 JSON",
+                Title = "\u9078\u64c7\u6a19\u6e96\u6a21\u578b JSON",
                 Filter = "JSON files|*.json"
             };
             if (dlg.ShowDialog() != DialogResult.OK) return;
@@ -159,15 +150,25 @@ namespace RevitGradingTool
             StandardSnapshot = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
                 System.IO.File.ReadAllText(dlg.FileName));
 
-            loadStandardBtn.Text = $"標準模型：{System.IO.Path.GetFileName(dlg.FileName)}";
+            loadStandardBtn.Text = $"\u6a19\u6e96\u6a21\u578b\uff1a{System.IO.Path.GetFileName(dlg.FileName)}";
             loadStudentsBtn.Enabled = true;
         }
 
         private void LoadStudentsBtn_Click(object sender, EventArgs e)
         {
+            // 先選 .rvt 資料夾
+            var rvtFolderDlg = new FolderBrowserDialog
+            {
+                Description = "\u9078\u64c7\u5b58\u653e\u5b78\u751f .rvt \u7684\u8cc7\u6599\u593e\uff08\u53ef\u4e0d\u9078\uff09"
+            };
+            string rvtFolder = "";
+            if (rvtFolderDlg.ShowDialog() == DialogResult.OK)
+                rvtFolder = rvtFolderDlg.SelectedPath;
+
+            // 再選 JSON 檔案
             var dlg = new OpenFileDialog
             {
-                Title = "選擇學生 JSON（可多選）",
+                Title = "\u9078\u64c7\u5b78\u751f JSON\uff08\u53ef\u591a\u9078\uff09",
                 Filter = "JSON files|*.json",
                 Multiselect = true
             };
@@ -191,8 +192,19 @@ namespace RevitGradingTool
                     Errors = errors
                 };
 
+                // 自動對應 .rvt 路徑
+                if (!string.IsNullOrEmpty(rvtFolder))
+                {
+                    string baseName = result.Name.Replace("_snapshot", "");
+                    string rvtPath = System.IO.Path.Combine(rvtFolder, baseName + ".rvt");
+                    if (System.IO.File.Exists(rvtPath))
+                        result.RvtPath = rvtPath;
+                    else
+                        System.Windows.Forms.MessageBox.Show($"找不到：\n{rvtPath}");
+                }
+
                 Students.Add(result);
-                studentListBox.Items.Add($"{result.Name}　　錯誤：{errors.Count} 個");
+                studentListBox.Items.Add($"{result.Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");
             }
         }
 
@@ -202,17 +214,20 @@ namespace RevitGradingTool
             if (idx < 0 || idx >= Students.Count) return;
 
             SelectedStudent = Students[idx];
-            errorCountLabel.Text = $"【{SelectedStudent.Name}】共 {SelectedStudent.Errors.Count} 個錯誤";
+            errorCountLabel.Text = $"\u3010{SelectedStudent.Name}\u3011\u5171 {SelectedStudent.Errors.Count} \u500b\u932f\u8aa4";
             highlightBtn.Enabled = true;
 
             errorDetailBox.Clear();
             foreach (var err in SelectedStudent.Errors)
             {
-                string icon = err.Type == ErrorType.Missing ? "[缺少]    " :
-                              err.Type == ErrorType.Extra ? "[多餘]    " : "[屬性錯誤]";
+                string icon = err.Type == ErrorType.Missing ? "[\u7f3a\u5c11]    " :
+                              err.Type == ErrorType.Extra ? "[\u591a\u9918]    " :
+                              err.Type == ErrorType.WrongRotation ? "[\u65cb\u8f49\u932f\u8aa4]" :
+                              err.Type == ErrorType.WrongPosition ? "[\u4f4d\u7f6e\u504f\u79fb]" :
+                                                                   "[\u5c6c\u6027\u932f\u8aa4]";
                 errorDetailBox.AppendText($"{icon} {err.Category}\n");
                 errorDetailBox.AppendText($"  {err.Detail}\n");
-                errorDetailBox.AppendText($"  位置：X={err.X:F0}, Y={err.Y:F0}, Z={err.Z:F0}\n\n");
+                errorDetailBox.AppendText($"  \u4f4d\u7f6e\uff1aX={err.X:F0}, Y={err.Y:F0}, Z={err.Z:F0}\n\n");
             }
         }
 
