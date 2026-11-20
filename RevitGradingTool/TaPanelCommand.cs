@@ -29,6 +29,14 @@ namespace RevitGradingTool
                 exEvent.Raise();
             };
 
+            // 清除標色
+            panel.ClearRequested += (s, e) =>
+            {
+                highlightEvent.Errors = new System.Collections.Generic.List<CompareError>();
+                highlightEvent.Standard = panel.StandardSnapshot;
+                exEvent.Raise();
+            };
+
             // Excel 匯出
             panel.ExportRequested += (s, e) =>
             {

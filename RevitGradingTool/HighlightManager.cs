@@ -75,7 +75,6 @@ namespace RevitGradingTool
                     }
                     else
                     {
-                        // 根據類別選容差
                         double tol = (err.Category == "\u6a13\u677f" || err.Category == "\u7246")
                             ? 500.0 / 304.8
                             : 50.0 / 304.8;
@@ -83,14 +82,45 @@ namespace RevitGradingTool
                         var collector = new FilteredElementCollector(_doc)
                             .WhereElementIsNotElementType();
 
+                        Element bestEl = null;
+                        double bestDist = double.MaxValue;
+
                         foreach (Element el in collector)
                         {
+                            if (el.Category?.Name != err.Category) continue;
+
                             XYZ elPt = GetElementCenter(el);
                             if (elPt == null) continue;
 
-                            double dist = elPt.DistanceTo(position);
-                            if (dist > tol) continue;
+                            double dist;
 
+                            if (err.Category == "\u7d50\u69cb\u67f1")
+                            {
+                                // 先用 XY 篩選，再找 Z 最近的
+                                double xyDist = Math.Sqrt(
+                                    Math.Pow(elPt.X - position.X, 2) +
+                                    Math.Pow(elPt.Y - position.Y, 2));
+
+                                if (xyDist > tol) continue;
+
+                                // XY 符合，改用 Z 差距排序
+                                dist = Math.Abs(elPt.Z - position.Z);
+                            }
+                            else
+                            {
+                                dist = elPt.DistanceTo(position);
+                                if (dist > tol) continue;
+                            }
+
+                            if (dist < bestDist)
+                            {
+                                bestDist = dist;
+                                bestEl = el;
+                            }
+                        }
+
+                        if (bestEl != null)
+                        {
                             var ovr = new OverrideGraphicSettings();
 
                             if (err.Type == ErrorType.Missing)
@@ -104,9 +134,8 @@ namespace RevitGradingTool
                                 ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
                             }
 
-                            _doc.ActiveView.SetElementOverrides(el.Id, ovr);
-                            _highlightedIds.Add(el.Id);
-                            break;
+                            _doc.ActiveView.SetElementOverrides(bestEl.Id, ovr);
+                            _highlightedIds.Add(bestEl.Id);
                         }
                     }
                 }
@@ -117,11 +146,21 @@ namespace RevitGradingTool
 
         private XYZ GetElementCenter(Element el)
         {
-            if (el.Location is LocationPoint lp) return lp.Point;
+            // 結構柱用 BoundingBox 中心取得正確的 Z 高度
+            if (el.Category?.Name == "\u7d50\u69cb\u67f1")
+            {
+                BoundingBoxXYZ bb = el.get_BoundingBox(null);
+                if (bb != null)
+                {
+                    if (el.Location is LocationPoint lp)
+                        return new XYZ(lp.Point.X, lp.Point.Y, (bb.Min.Z + bb.Max.Z) / 2);
+                }
+            }
+
+            if (el.Location is LocationPoint lp2) return lp2.Point;
             if (el.Location is LocationCurve lc)
                 return (lc.Curve.GetEndPoint(0) + lc.Curve.GetEndPoint(1)) / 2;
 
-            // 樓板、牆等用幾何中心
             var geoOpt = new Options { ComputeReferences = false };
             var geoElem = el.get_Geometry(geoOpt);
             if (geoElem != null)

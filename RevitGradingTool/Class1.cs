@@ -82,9 +82,29 @@ namespace RevitGradingTool
 
                     if (el.Location is LocationPoint lp)
                     {
-                        snap.X = lp.Point.X * 304.8;
-                        snap.Y = lp.Point.Y * 304.8;
-                        snap.Z = lp.Point.Z * 304.8;
+                        // 結構柱用 BoundingBox 中心取得正確的 Z 高度
+                        if (el.Category?.Name == "\u7d50\u69cb\u67f1")
+                        {
+                            BoundingBoxXYZ bb = el.get_BoundingBox(null);
+                            if (bb != null)
+                            {
+                                snap.X = lp.Point.X * 304.8;
+                                snap.Y = lp.Point.Y * 304.8;
+                                snap.Z = ((bb.Min.Z + bb.Max.Z) / 2) * 304.8;
+                            }
+                            else
+                            {
+                                snap.X = lp.Point.X * 304.8;
+                                snap.Y = lp.Point.Y * 304.8;
+                                snap.Z = lp.Point.Z * 304.8;
+                            }
+                        }
+                        else
+                        {
+                            snap.X = lp.Point.X * 304.8;
+                            snap.Y = lp.Point.Y * 304.8;
+                            snap.Z = lp.Point.Z * 304.8;
+                        }
                     }
                     else if (el.Location is LocationCurve lc)
                     {

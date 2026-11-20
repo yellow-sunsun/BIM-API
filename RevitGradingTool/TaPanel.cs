@@ -29,6 +29,8 @@ namespace RevitGradingTool
 
         public event EventHandler ExportRequested;
 
+        public event EventHandler ClearRequested;
+
         public TaPanel()
         {
             InitializeUI();
@@ -116,11 +118,6 @@ namespace RevitGradingTool
             // 由下往上加（Dock.Top 是反序）
             this.Controls.Add(errorDetailBox);
             this.Controls.Add(detailLabel);
-            this.Controls.Add(highlightBtn);
-            this.Controls.Add(errorCountLabel);
-            this.Controls.Add(studentListBox);
-            this.Controls.Add(listLabel);
-            this.Controls.Add(loadStudentsBtn);
             // Excel 匯出按鈕
             var exportBtn = new Button
             {
@@ -131,6 +128,22 @@ namespace RevitGradingTool
             };
             exportBtn.Click += (s, e) => ExportRequested?.Invoke(this, e);
             this.Controls.Add(exportBtn);
+
+            var clearBtn = new Button
+            {
+                Text = "\u6e05\u9664\u6a19\u8272",
+                Dock = DockStyle.Top,
+                Height = 36,
+                BackColor = System.Drawing.Color.LightGray
+            };
+            clearBtn.Click += (s, e) => ClearRequested?.Invoke(this, e);
+            this.Controls.Add(clearBtn);
+
+            this.Controls.Add(highlightBtn);
+            this.Controls.Add(errorCountLabel);
+            this.Controls.Add(studentListBox);
+            this.Controls.Add(listLabel);
+            this.Controls.Add(loadStudentsBtn);
             this.Controls.Add(loadStandardBtn);
         }
 

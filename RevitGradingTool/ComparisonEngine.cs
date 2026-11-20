@@ -173,9 +173,17 @@ namespace RevitGradingTool
                 if (used.Contains(i)) continue;
                 if (candidates[i].Category != target.Category) continue;
 
-                double dist = Distance(target.X, target.Y, target.Z,
-                                       candidates[i].X, candidates[i].Y, candidates[i].Z);
-                if (dist <= tolerance && dist < bestDist)
+                var c = candidates[i];
+
+                // XY ©M Z ¤À¶}§PÂ_
+                double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
+                double zDist = Math.Abs(c.Z - target.Z);
+
+                if (xyDist > tolerance) continue;
+                if (zDist > tolerance) continue;
+
+                double dist = Math.Sqrt(xyDist * xyDist + zDist * zDist);
+                if (dist < bestDist)
                 {
                     bestDist = dist;
                     bestIdx = i;
