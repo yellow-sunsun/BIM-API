@@ -19,19 +19,18 @@ namespace RevitGradingTool
         {
             var standardDoc = app.ActiveUIDocument.Document;
 
-            // 建立或重用標準模型的 HighlightManager
             if (_standardManager == null)
                 _standardManager = new HighlightManager(standardDoc);
 
-            // 先清除標準模型的標色
             _standardManager.ClearAll();
 
-            // 先清除並關閉上一個學生模型
+            // 關閉上一個學生模型
             if (_studentDoc != null)
             {
                 try
                 {
-                    _studentManager?.ClearAll();
+                    // 不清除標色，直接關閉不儲存
+                    // Close(false) = 捨棄所有修改直接關閉
                     if (_studentDoc.PathName != standardDoc.PathName)
                         _studentDoc.Close(false);
                 }
@@ -40,14 +39,11 @@ namespace RevitGradingTool
                 _studentManager = null;
             }
 
-            // 如果沒有錯誤（清除模式）就到此結束
             if (Errors == null || Errors.Count == 0)
                 return;
 
-            // 標準模型標色
             _standardManager.Highlight(Errors, Standard);
 
-            // 開啟學生模型並標色
             if (!string.IsNullOrEmpty(StudentRvtPath))
             {
                 try
