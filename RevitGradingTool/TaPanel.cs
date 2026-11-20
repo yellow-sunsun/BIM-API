@@ -156,14 +156,16 @@ namespace RevitGradingTool
 
         private void LoadStudentsBtn_Click(object sender, EventArgs e)
         {
-            // 先選 .rvt 資料夾
-            var rvtFolderDlg = new FolderBrowserDialog
+            var rvtDlg = new OpenFileDialog
             {
-                Description = "\u9078\u64c7\u5b58\u653e\u5b78\u751f .rvt \u7684\u8cc7\u6599\u593e\uff08\u53ef\u4e0d\u9078\uff09"
+                Title = "\u9078\u64c7\u5b78\u751f .rvt \u6a94\u6848\uff08\u53ef\u591a\u9078\uff09",
+                Filter = "Revit files|*.rvt",
+                Multiselect = true,
+                InitialDirectory = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop)
             };
-            string rvtFolder = "";
-            if (rvtFolderDlg.ShowDialog() == DialogResult.OK)
-                rvtFolder = rvtFolderDlg.SelectedPath;
+            string[] rvtFiles = new string[0];
+            if (rvtDlg.ShowDialog() == DialogResult.OK)
+                rvtFiles = rvtDlg.FileNames;
 
             // 再選 JSON 檔案
             var dlg = new OpenFileDialog
@@ -193,15 +195,10 @@ namespace RevitGradingTool
                 };
 
                 // 自動對應 .rvt 路徑
-                if (!string.IsNullOrEmpty(rvtFolder))
-                {
-                    string baseName = result.Name.Replace("_snapshot", "");
-                    string rvtPath = System.IO.Path.Combine(rvtFolder, baseName + ".rvt");
-                    if (System.IO.File.Exists(rvtPath))
-                        result.RvtPath = rvtPath;
-                    else
-                        System.Windows.Forms.MessageBox.Show($"找不到：\n{rvtPath}");
-                }
+                // 自動對應 .rvt 路徑
+                string baseName = result.Name.Replace("_snapshot", "");
+                result.RvtPath = System.Array.Find(rvtFiles,
+                    f => System.IO.Path.GetFileNameWithoutExtension(f) == baseName);
 
                 Students.Add(result);
                 studentListBox.Items.Add($"{result.Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");

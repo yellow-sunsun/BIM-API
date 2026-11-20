@@ -1,6 +1,7 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RevitGradingTool
 {
@@ -39,6 +40,15 @@ namespace RevitGradingTool
 
             if (Errors == null || Errors.Count == 0)
                 return;
+
+            // 先 ZoomToFit 標準模型
+            var stdView3D = app.ActiveUIDocument.ActiveView as View3D;
+            if (stdView3D != null)
+            {
+                var stdUiView = app.ActiveUIDocument.GetOpenUIViews()
+                    .FirstOrDefault(v => v.ViewId == stdView3D.Id);
+                stdUiView?.ZoomToFit();
+            }
 
             _standardManager.Highlight(Errors, Standard);
 
