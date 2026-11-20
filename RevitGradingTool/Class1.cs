@@ -21,6 +21,7 @@ namespace RevitGradingTool
         public double Width { get; set; }
         public double Height { get; set; }
         public double Depth { get; set; }
+        public double Rotation { get; set; }
     }
 
     public class ModelSnapshot
@@ -105,6 +106,17 @@ namespace RevitGradingTool
                             snap.Y = lp.Point.Y * 304.8;
                             snap.Z = lp.Point.Z * 304.8;
                         }
+
+                        // 旋轉角度
+                        if (el is FamilyInstance fiLp)
+                        {
+                            var transform = fiLp.GetTotalTransform();
+                            snap.Rotation = Math.Atan2(transform.BasisX.Y, transform.BasisX.X) * (180.0 / Math.PI);
+                        }
+                        else
+                        {
+                            snap.Rotation = lp.Rotation * (180.0 / Math.PI);
+                        }
                     }
                     else if (el.Location is LocationCurve lc)
                     {
@@ -112,10 +124,22 @@ namespace RevitGradingTool
                         snap.X = mid.X * 304.8;
                         snap.Y = mid.Y * 304.8;
                         snap.Z = mid.Z * 304.8;
+
+                        // 梁用 GetTotalTransform，牆用曲線方向
+                        if (el is FamilyInstance fiLc)
+                        {
+                            var transform = fiLc.GetTotalTransform();
+                            snap.Rotation = Math.Atan2(transform.BasisX.Y, transform.BasisX.X) * (180.0 / Math.PI);
+                        }
+                        else
+                        {
+                            XYZ dir = (lc.Curve.GetEndPoint(1) - lc.Curve.GetEndPoint(0)).Normalize();
+                            snap.Rotation = Math.Atan2(dir.Y, dir.X) * (180.0 / Math.PI);
+                        }
                     }
                     else
                     {
-                        // 樓板、牆等用幾何中心
+                        // 樓板等用幾何中心
                         var geoOpt = new Options { ComputeReferences = false };
                         var geoElem = el.get_Geometry(geoOpt);
 
@@ -146,6 +170,13 @@ namespace RevitGradingTool
                                 snap.Y = ((minY + maxY) / 2) * 304.8;
                                 snap.Z = ((minZ + maxZ) / 2) * 304.8;
                             }
+                        }
+
+                        // 樓板如果是 FamilyInstance 也取旋轉
+                        if (el is FamilyInstance fiElse)
+                        {
+                            var transform = fiElse.GetTotalTransform();
+                            snap.Rotation = Math.Atan2(transform.BasisX.Y, transform.BasisX.X) * (180.0 / Math.PI);
                         }
                     }
 

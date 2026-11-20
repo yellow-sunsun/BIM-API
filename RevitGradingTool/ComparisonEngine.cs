@@ -7,7 +7,9 @@ namespace RevitGradingTool
     {
         Missing,
         Extra,
-        WrongAttr
+        WrongAttr,
+        WrongRotation,
+        WrongPosition
     }
 
     public class CompareError
@@ -23,7 +25,7 @@ namespace RevitGradingTool
     public class ComparisonEngine
     {
         private const double TOLERANCE_COLUMN = 50.0;
-        private const double TOLERANCE_BEAM = 300.0;
+        private const double TOLERANCE_BEAM = 100.0;
         private const double TOLERANCE_FLOOR = 500.0;
         private const double TOLERANCE_WALL = 500.0;
 
@@ -37,7 +39,6 @@ namespace RevitGradingTool
             var errors = new List<CompareError>();
             var matched = new HashSet<int>();
 
-            // 計算座標偏移，校正學生模型整體偏移
             XYZOffset offset = CalcOffset(standard, student);
             ModelSnapshot correctedStudent = ApplyOffset(student, offset);
 
@@ -62,6 +63,8 @@ namespace RevitGradingTool
                 {
                     matched.Add(foundIdx);
                     var stuEl = correctedStudent.Elements[foundIdx];
+
+                    // 屬性錯誤
                     var attrErrors = CheckAttributes(stdEl, stuEl);
                     if (attrErrors.Count > 0)
                     {
@@ -73,6 +76,22 @@ namespace RevitGradingTool
                             Y = stuEl.Y,
                             Z = stuEl.Z,
                             Detail = string.Join("\uff1b", attrErrors)
+                        });
+                    }
+
+                    // 旋轉角度錯誤
+                    double rotDiff = Math.Abs(stdEl.Rotation - stuEl.Rotation);
+                    if (rotDiff > 180) rotDiff = 360 - rotDiff;
+                    if (rotDiff > 1.0)
+                    {
+                        errors.Add(new CompareError
+                        {
+                            Type = ErrorType.WrongRotation,
+                            Category = stdEl.Category,
+                            X = stuEl.X,
+                            Y = stuEl.Y,
+                            Z = stuEl.Z,
+                            Detail = $"\u65cb\u8f49\u89d2\u5ea6\u61c9\u70ba {stdEl.Rotation:F1}\u00b0\uff0c\u5b78\u751f\u7684\u662f {stuEl.Rotation:F1}\u00b0"
                         });
                     }
                 }
@@ -95,12 +114,50 @@ namespace RevitGradingTool
                 }
             }
 
+            // 偵測位置偏移：缺少 + 多餘 同類別且距離 < 1000mm → 合併成 WrongPosition
+            var missingErrors = errors.FindAll(e => e.Type == ErrorType.Missing);
+            var extraErrors = errors.FindAll(e => e.Type == ErrorType.Extra);
+            var toRemove = new List<CompareError>();
+            var toAdd = new List<CompareError>();
+
+            foreach (var missing in missingErrors)
+            {
+                foreach (var extra in extraErrors)
+                {
+                    if (extra.Category != missing.Category) continue;
+                    if (toRemove.Contains(extra)) continue;
+
+                    double dist = Math.Sqrt(
+                        Math.Pow(extra.X - missing.X, 2) +
+                        Math.Pow(extra.Y - missing.Y, 2) +
+                        Math.Pow(extra.Z - missing.Z, 2));
+
+                    if (dist < 1000.0)
+                    {
+                        toRemove.Add(missing);
+                        toRemove.Add(extra);
+                        toAdd.Add(new CompareError
+                        {
+                            Type = ErrorType.WrongPosition,
+                            Category = missing.Category,
+                            X = missing.X,
+                            Y = missing.Y,
+                            Z = missing.Z,
+                            Detail = $"\u3010{missing.Category}\u3011\u4f4d\u7f6e\u504f\u79fb\uff0c\u61c9\u5728 X={missing.X:F0}, Y={missing.Y:F0}\uff0c\u5b78\u751f\u653e\u5728 X={extra.X:F0}, Y={extra.Y:F0}"
+                        });
+                        break;
+                    }
+                }
+            }
+
+            foreach (var r in toRemove) errors.Remove(r);
+            errors.AddRange(toAdd);
+
             return errors;
         }
 
         private XYZOffset CalcOffset(ModelSnapshot standard, ModelSnapshot student)
         {
-            // 找第一對同類別的柱來估算偏移，柱的座標最穩定
             foreach (var stdEl in standard.Elements)
             {
                 if (stdEl.Category != "\u7d50\u69cb\u67f1") continue;
@@ -115,7 +172,6 @@ namespace RevitGradingTool
                     };
                 }
             }
-            // 沒有柱的話用任意第一對同類別構件
             foreach (var stdEl in standard.Elements)
             {
                 foreach (var stuEl in student.Elements)
@@ -148,7 +204,8 @@ namespace RevitGradingTool
                     Material = el.Material,
                     Width = el.Width,
                     Height = el.Height,
-                    Depth = el.Depth
+                    Depth = el.Depth,
+                    Rotation = el.Rotation
                 });
             }
             return corrected;
@@ -174,8 +231,6 @@ namespace RevitGradingTool
                 if (candidates[i].Category != target.Category) continue;
 
                 var c = candidates[i];
-
-                // XY 和 Z 分開判斷
                 double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
                 double zDist = Math.Abs(c.Z - target.Z);
 
@@ -191,14 +246,6 @@ namespace RevitGradingTool
             }
 
             return bestIdx;
-        }
-
-        private double Distance(double x1, double y1, double z1,
-                                double x2, double y2, double z2)
-        {
-            return Math.Sqrt(Math.Pow(x2 - x1, 2) +
-                             Math.Pow(y2 - y1, 2) +
-                             Math.Pow(z2 - z1, 2));
         }
 
         private List<string> CheckAttributes(ElementSnapshot std, ElementSnapshot stu)

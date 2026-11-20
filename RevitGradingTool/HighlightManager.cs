@@ -125,11 +125,19 @@ namespace RevitGradingTool
 
                             if (err.Type == ErrorType.Missing)
                             {
+                                // 紅色：缺少構件
                                 ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
+                                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+                            }
+                            else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
+                            {
+                                // 黃色：旋轉錯誤 / 位置偏移
+                                ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
                                 ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
                             }
                             else
                             {
+                                // 橘色：屬性錯誤
                                 ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
                                 ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
                             }
