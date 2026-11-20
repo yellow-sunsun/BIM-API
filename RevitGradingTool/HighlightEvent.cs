@@ -29,8 +29,6 @@ namespace RevitGradingTool
             {
                 try
                 {
-                    // 不清除標色，直接關閉不儲存
-                    // Close(false) = 捨棄所有修改直接關閉
                     if (_studentDoc.PathName != standardDoc.PathName)
                         _studentDoc.Close(false);
                 }
@@ -60,8 +58,11 @@ namespace RevitGradingTool
                     _studentManager = new HighlightManager(_studentDoc);
                     _studentManager.HighlightStudent(Errors);
 
+                    // 切換回標準模型讓它在左邊
+                    app.OpenAndActivateDocument(standardDoc.PathName);
+
                     // 並排視窗
-                    var tileCmd = RevitCommandId.LookupCommandId("View.TileWindows");
+                    var tileCmd = RevitCommandId.LookupPostableCommandId(PostableCommand.TileViews);
                     if (tileCmd != null)
                         app.PostCommand(tileCmd);
                 }
