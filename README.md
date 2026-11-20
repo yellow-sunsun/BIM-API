@@ -143,6 +143,75 @@ Add-In Manager → 執行 `TaPanelCommand`
 
 <img width="356" height="522" alt="圖片3333" src="https://github.com/user-attachments/assets/97bb581d-3d73-4acc-8a2d-76f4edb954e1" />
 
+
+### 第九次測試
+
+- 問題1:學生5少一面牆卻顯示少一個柱子
+
+<img width="201" height="294" alt="圖片1" src="https://github.com/user-attachments/assets/d15b68a6-26bb-48d0-8774-eb20da5ee53d" />  
+<img width="400" height="294" alt="圖片2" src="https://github.com/user-attachments/assets/44b02931-7272-46fb-9961-cb7978dc1716" />
+
+`HighlightManager` 在標準模型上找最近的構件時，容差 500mm 太大，找到了附近的柱子而不是牆。
+修改`HighlightManager.cs`
+
+<img width="692" height="488" alt="圖片3" src="https://github.com/user-attachments/assets/19053d35-01e8-4c3d-898e-4dc68de048f4" />
+
+- 問題2: 學生7二樓缺柱子，卻顯示在一樓
+
+<img width="209" height="320" alt="圖片4" src="https://github.com/user-attachments/assets/60901c84-2715-44ac-9e35-34a0c23364b1" />  
+<img width="401" height="320" alt="圖片5" src="https://github.com/user-attachments/assets/56ebdc38-8b75-4f0b-8230-2f5b9b0c2089" />
+
+結構柱的 Z 座標全部都是 0.0
+
+修改`Class1.cs`、`HighlightManager.cs`
+
+<img width="692" height="454" alt="圖片6" src="https://github.com/user-attachments/assets/7818d244-f1e7-4ad2-8240-0fa7e9a65ead" />
+
+- 新增一位錯一堆的學生，測試正常
+
+<img width="692" height="433" alt="圖片7" src="https://github.com/user-attachments/assets/2681789d-7fb4-4190-811f-d11322361cac" />
+
+- 在 `TaPanel.cs` 裡加一個「清除標色」按鈕
+
+修改: `TaPanel.cs`、`TaPanelCommand.cs`
+
+<img width="370" height="349" alt="圖片8" src="https://github.com/user-attachments/assets/3416c508-7e6b-4a68-ac6b-da972d08b06f" />  
+<img width="263" height="353" alt="圖片9" src="https://github.com/user-attachments/assets/55a6cc35-1104-473a-af87-09bcf108dc75" />
+
+
+### 第十次測試
+
+- 旋轉偵測不到錯誤，因為中心座標相同，所以要加入旋轉判斷 (新增學生17測試旋轉)
+
+<img width="247" height="261" alt="圖片10" src="https://github.com/user-attachments/assets/8e18aef6-2f82-40bf-9c3c-75ffd85b4908" />
+
+修改`Class1.cs`、`ComparisonEngine.cs`、`HighlightManager.cs`
+
+<img width="332" height="259" alt="圖片11" src="https://github.com/user-attachments/assets/78f4c797-52e6-4c96-a9e8-40407fedc6d0" />  
+<img width="447" height="325" alt="圖片12" src="https://github.com/user-attachments/assets/e86aa7fe-7f92-4682-a211-4becfae85586" />
+
+- 元件偏移也偵測不到 (新增學生18測試偏移)
+
+<img width="251" height="269" alt="圖片13" src="https://github.com/user-attachments/assets/d08d5445-325f-4409-8e18-56269ce54eb4" />
+
+原本設定偏移量在容差範圍內（300mm），所以系統認為是同一根梁 -> 改成100mm
+
+修改`ComparisonEngine.cs`
+
+<img width="647" height="432" alt="圖片14" src="https://github.com/user-attachments/assets/03eb750d-5be7-44aa-afa8-136c54349066" />
+
+偏移修改後偵測為缺少正確元件、多於偏移元件 -> 難懂
+
+統整進黃色裡面，黃色代表旋轉錯誤和偏移錯誤，之後黃色代表其他錯誤，錯哪裡會在說明裡面
+
+邏輯為系統判斷偵測到「缺少」+「多餘」是同類別且距離近時，偵測為偏移
+
+修改`ComparisonEngine.cs`、`HighlightManager.cs`
+
+<img width="662" height="450" alt="圖片15" src="https://github.com/user-attachments/assets/7e3752ee-4725-42fc-8319-41d6c1d5aa1d" />
+
+目前跑18個3層樓的json需要25秒
+
 ---
 
 ## 檔案結構
