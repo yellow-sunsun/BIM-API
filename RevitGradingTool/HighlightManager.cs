@@ -42,6 +42,7 @@ namespace RevitGradingTool
             _textNoteIds.Clear();
         }
 
+        // 標準模型標色（用標準座標）
         public void Highlight(List<CompareError> errors, ModelSnapshot standard)
         {
             ClearAll();
@@ -63,88 +64,14 @@ namespace RevitGradingTool
                             HorizontalAlignment = HorizontalTextAlignment.Center,
                             TypeId = textNoteTypeId
                         };
-
                         TextNote note = TextNote.Create(
-                            _doc,
-                            _doc.ActiveView.Id,
-                            position,
-                            "\u2b06 \u591a\u9918\u69cb\u4ef6",
-                            textNoteOptions);
-
+                            _doc, _doc.ActiveView.Id, position,
+                            "\u2b06 \u591a\u9918\u69cb\u4ef6", textNoteOptions);
                         _textNoteIds.Add(note.Id);
                     }
                     else
                     {
-                        double tol = (err.Category == "\u6a13\u677f" || err.Category == "\u7246")
-                            ? 500.0 / 304.8
-                            : 50.0 / 304.8;
-
-                        var collector = new FilteredElementCollector(_doc)
-                            .WhereElementIsNotElementType();
-
-                        Element bestEl = null;
-                        double bestDist = double.MaxValue;
-
-                        foreach (Element el in collector)
-                        {
-                            if (el.Category?.Name != err.Category) continue;
-
-                            XYZ elPt = GetElementCenter(el);
-                            if (elPt == null) continue;
-
-                            double dist;
-
-                            if (err.Category == "\u7d50\u69cb\u67f1")
-                            {
-                                // 先用 XY 篩選，再找 Z 最近的
-                                double xyDist = Math.Sqrt(
-                                    Math.Pow(elPt.X - position.X, 2) +
-                                    Math.Pow(elPt.Y - position.Y, 2));
-
-                                if (xyDist > tol) continue;
-
-                                // XY 符合，改用 Z 差距排序
-                                dist = Math.Abs(elPt.Z - position.Z);
-                            }
-                            else
-                            {
-                                dist = elPt.DistanceTo(position);
-                                if (dist > tol) continue;
-                            }
-
-                            if (dist < bestDist)
-                            {
-                                bestDist = dist;
-                                bestEl = el;
-                            }
-                        }
-
-                        if (bestEl != null)
-                        {
-                            var ovr = new OverrideGraphicSettings();
-
-                            if (err.Type == ErrorType.Missing)
-                            {
-                                // 紅色：缺少構件
-                                ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
-                                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                            }
-                            else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
-                            {
-                                // 黃色：旋轉錯誤 / 位置偏移
-                                ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
-                                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                            }
-                            else
-                            {
-                                // 橘色：屬性錯誤
-                                ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
-                                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                            }
-
-                            _doc.ActiveView.SetElementOverrides(bestEl.Id, ovr);
-                            _highlightedIds.Add(bestEl.Id);
-                        }
+                        ApplyColor(err, position);
                     }
                 }
 
@@ -152,9 +79,118 @@ namespace RevitGradingTool
             }
         }
 
+        // 學生模型標色（用學生座標）
+        public void HighlightStudent(List<CompareError> errors)
+        {
+            ClearAll();
+
+            using (var tx = new Transaction(_doc, "\u6a19\u8272\u5b78\u751f\u932f\u8aa4"))
+            {
+                tx.Start();
+
+                var textNoteTypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
+
+                foreach (var err in errors)
+                {
+                    XYZ position = new XYZ(err.StudentX / 304.8, err.StudentY / 304.8, err.StudentZ / 304.8);
+
+                    if (err.Type == ErrorType.Extra)
+                    {
+                        var textNoteOptions = new TextNoteOptions
+                        {
+                            HorizontalAlignment = HorizontalTextAlignment.Center,
+                            TypeId = textNoteTypeId
+                        };
+                        TextNote note = TextNote.Create(
+                            _doc, _doc.ActiveView.Id, position,
+                            "\u2b06 \u591a\u9918\u69cb\u4ef6", textNoteOptions);
+                        _textNoteIds.Add(note.Id);
+                    }
+                    else if (err.Type == ErrorType.Missing)
+                    {
+                        // 在學生模型對應位置放箭頭提示
+                        var textNoteOptions = new TextNoteOptions
+                        {
+                            HorizontalAlignment = HorizontalTextAlignment.Center,
+                            TypeId = textNoteTypeId
+                        };
+                        TextNote note = TextNote.Create(
+                            _doc, _doc.ActiveView.Id, position,
+                            "\u2b07 \u6b64\u8655\u7f3a\u5c11\u69cb\u4ef6", textNoteOptions);
+                        _textNoteIds.Add(note.Id);
+                        continue;
+                    }
+                    else
+                    {
+                        ApplyColor(err, position);
+                    }
+                }
+
+                tx.Commit();
+            }
+        }
+
+        private void ApplyColor(CompareError err, XYZ position)
+        {
+            double tol = (err.Category == "\u6a13\u677f" || err.Category == "\u7246")
+                ? 500.0 / 304.8 : 50.0 / 304.8;
+
+            var collector = new FilteredElementCollector(_doc).WhereElementIsNotElementType();
+            Element bestEl = null;
+            double bestDist = double.MaxValue;
+
+            foreach (Element el in collector)
+            {
+                if (el.Category?.Name != err.Category) continue;
+
+                XYZ elPt = GetElementCenter(el);
+                if (elPt == null) continue;
+
+                double dist;
+                if (err.Category == "\u7d50\u69cb\u67f1")
+                {
+                    double xyDist = Math.Sqrt(
+                        Math.Pow(elPt.X - position.X, 2) +
+                        Math.Pow(elPt.Y - position.Y, 2));
+                    if (xyDist > tol) continue;
+                    dist = Math.Abs(elPt.Z - position.Z);
+                }
+                else
+                {
+                    dist = elPt.DistanceTo(position);
+                    if (dist > tol) continue;
+                }
+
+                if (dist < bestDist) { bestDist = dist; bestEl = el; }
+            }
+
+            if (bestEl != null)
+            {
+                var ovr = new OverrideGraphicSettings();
+
+                if (err.Type == ErrorType.Missing)
+                {
+                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
+                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+                }
+                else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
+                {
+                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
+                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+                }
+                else
+                {
+                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
+                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+                }
+
+                _doc.ActiveView.SetElementOverrides(bestEl.Id, ovr);
+                _highlightedIds.Add(bestEl.Id);
+            }
+        }
+
         private XYZ GetElementCenter(Element el)
         {
-            // 結構柱用 BoundingBox 中心取得正確的 Z 高度
             if (el.Category?.Name == "\u7d50\u69cb\u67f1")
             {
                 BoundingBoxXYZ bb = el.get_BoundingBox(null);

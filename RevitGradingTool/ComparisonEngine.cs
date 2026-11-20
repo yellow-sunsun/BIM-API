@@ -19,6 +19,9 @@ namespace RevitGradingTool
         public double X { get; set; }
         public double Y { get; set; }
         public double Z { get; set; }
+        public double StudentX { get; set; }
+        public double StudentY { get; set; }
+        public double StudentZ { get; set; }
         public string Detail { get; set; }
     }
 
@@ -56,6 +59,9 @@ namespace RevitGradingTool
                         X = stdEl.X,
                         Y = stdEl.Y,
                         Z = stdEl.Z,
+                        StudentX = stdEl.X,
+                        StudentY = stdEl.Y,
+                        StudentZ = stdEl.Z,
                         Detail = $"\u9019\u88e1\u61c9\u8a72\u6709\u4e00\u500b\u3010{stdEl.Category}\u3011({stdEl.FamilyType})\uff0c\u4f46\u5b78\u751f\u6a21\u578b\u4e2d\u627e\u4e0d\u5230"
                     });
                 }
@@ -64,7 +70,6 @@ namespace RevitGradingTool
                     matched.Add(foundIdx);
                     var stuEl = correctedStudent.Elements[foundIdx];
 
-                    // 屬性錯誤
                     var attrErrors = CheckAttributes(stdEl, stuEl);
                     if (attrErrors.Count > 0)
                     {
@@ -72,14 +77,16 @@ namespace RevitGradingTool
                         {
                             Type = ErrorType.WrongAttr,
                             Category = stdEl.Category,
-                            X = stuEl.X,
-                            Y = stuEl.Y,
-                            Z = stuEl.Z,
+                            X = stdEl.X,
+                            Y = stdEl.Y,
+                            Z = stdEl.Z,
+                            StudentX = stuEl.X,
+                            StudentY = stuEl.Y,
+                            StudentZ = stuEl.Z,
                             Detail = string.Join("\uff1b", attrErrors)
                         });
                     }
 
-                    // 旋轉角度錯誤
                     double rotDiff = Math.Abs(stdEl.Rotation - stuEl.Rotation);
                     if (rotDiff > 180) rotDiff = 360 - rotDiff;
                     if (rotDiff > 1.0)
@@ -88,9 +95,12 @@ namespace RevitGradingTool
                         {
                             Type = ErrorType.WrongRotation,
                             Category = stdEl.Category,
-                            X = stuEl.X,
-                            Y = stuEl.Y,
-                            Z = stuEl.Z,
+                            X = stdEl.X,
+                            Y = stdEl.Y,
+                            Z = stdEl.Z,
+                            StudentX = stuEl.X,
+                            StudentY = stuEl.Y,
+                            StudentZ = stuEl.Z,
                             Detail = $"\u65cb\u8f49\u89d2\u5ea6\u61c9\u70ba {stdEl.Rotation:F1}\u00b0\uff0c\u5b78\u751f\u7684\u662f {stuEl.Rotation:F1}\u00b0"
                         });
                     }
@@ -109,12 +119,14 @@ namespace RevitGradingTool
                         X = stuEl.X,
                         Y = stuEl.Y,
                         Z = stuEl.Z,
+                        StudentX = stuEl.X,
+                        StudentY = stuEl.Y,
+                        StudentZ = stuEl.Z,
                         Detail = $"\u9019\u500b\u3010{stuEl.Category}\u3011({stuEl.FamilyType})\u662f\u591a\u9918\u7684\uff0c\u6a19\u6e96\u6a21\u578b\u6c92\u6709"
                     });
                 }
             }
 
-            // 偵測位置偏移：缺少 + 多餘 同類別且距離 < 1000mm → 合併成 WrongPosition
             var missingErrors = errors.FindAll(e => e.Type == ErrorType.Missing);
             var extraErrors = errors.FindAll(e => e.Type == ErrorType.Extra);
             var toRemove = new List<CompareError>();
@@ -143,6 +155,9 @@ namespace RevitGradingTool
                             X = missing.X,
                             Y = missing.Y,
                             Z = missing.Z,
+                            StudentX = extra.X,
+                            StudentY = extra.Y,
+                            StudentZ = extra.Z,
                             Detail = $"\u3010{missing.Category}\u3011\u4f4d\u7f6e\u504f\u79fb\uff0c\u61c9\u5728 X={missing.X:F0}, Y={missing.Y:F0}\uff0c\u5b78\u751f\u653e\u5728 X={extra.X:F0}, Y={extra.Y:F0}"
                         });
                         break;

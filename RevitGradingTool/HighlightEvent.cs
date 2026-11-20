@@ -62,7 +62,7 @@ namespace RevitGradingTool
                     }
 
                     _studentManager = new HighlightManager(_studentDoc);
-                    _studentManager.Highlight(Errors, Standard);
+                    _studentManager.HighlightStudent(Errors);
 
                     // ¨Ã±Æµøµ¡
                     var tileCmd = RevitCommandId.LookupCommandId("View.TileWindows");
