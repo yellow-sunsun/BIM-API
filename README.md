@@ -212,6 +212,149 @@ Add-In Manager → 執行 `TaPanelCommand`
 
 目前跑18個3層樓的json需要25秒
 
+
+### 第十次測試: 大工程
+
+要把學生模型也同步顯示出，使用分割螢幕方式，助教才能清楚檢查
+
+1.	助教在面板選學生
+  
+3.	插件自動開啟該學生的 .rvt
+   
+5.	兩個視圖並排（標準模型 + 學生模型）
+   
+7.	同時在兩邊標色：
+   
+- 標準模型：標出「這裡應該有但學生沒有」（紅色）
+
+- 學生模型：標出「這裡是錯的地方」（對應顏色）
+
+1.	修改 TaPanel.cs
+   
+在`StudentResult` 加上 .rvt 路徑
+
+3.	修改 `TaPanelCommand.cs`、`HighlightEvent.cs`
+   
+點標色時自動開啟學生模型並並排視窗
+
+---------------------------------10 thousand years later… -----------------------------------
+
+<img width="692" height="431" alt="圖片1" src="https://github.com/user-attachments/assets/ae751d1b-08c9-477c-9616-8f3e4cbcf615" />
+
+同時顯示助教和學生端，可以確認系統有沒有判斷錯誤
+
+### 第十一次測試: 
+
+- 問題1: 學生端柱子顯示不對
+
+<img width="437" height="297" alt="圖片2" src="https://github.com/user-attachments/assets/1c3eca20-64d3-4f7b-ba61-c6e77c08b7d6" />
+
+修改`ComparisonEngine.cs`、`HighlightEvent.cs`、`HighlightManager.cs`
+
+<img width="692" height="479" alt="圖片3" src="https://github.com/user-attachments/assets/df7c672e-465c-459c-80a8-907b18caa5c6" />
+
+這樣才對 缺少構件是不會顯示出來的
+
+- 希望在學生缺少的地方補上提示「⬇ 此處缺少構件」
+
+修改`HighlightManager.cs`
+
+<img width="692" height="406" alt="圖片4" src="https://github.com/user-attachments/assets/29a38b18-99e9-443b-a5c9-316edd0ea603" />
+
+### 第十二次測試: 
+
+開下一位學生檔案時，自動關閉上一位學生檔案，並且確保不覆蓋到舊有檔案
+
+捨棄所有修改直接關閉
+
+修改`HighlightEvent.cs`
+
+不會開太多分頁，永遠保持2個(標準模型、學生模型)，畫面乾淨!!!
+
+按清除時，也會將除了標準模型外的其他分頁都關掉
+
+### 第十三次測試:
+
+自動左右分割，容易看
+
+原本需要自己兩個檔案切換或手動切換左右分割視圖
+
+<img width="692" height="363" alt="圖片5" src="https://github.com/user-attachments/assets/2acec4af-cd65-4031-96ed-cdfa85926630" />
+
+修改`HighlightEvent.cs`
+
+好難 找不到並排指令…
+
+找到了，是TileViews
+
+<img width="692" height="411" alt="圖片6" src="https://github.com/user-attachments/assets/05fba6be-7ae3-43d9-9981-5a2f7bb45888" />
+
+把老師和學生視圖換邊，老師在左學生在右
+
+修改`HighlightEvent.cs`
+
+開啟學生模型後，先切換回標準模型視圖，再並排，這樣標準模型會在左邊
+
+<img width="692" height="395" alt="圖片7" src="https://github.com/user-attachments/assets/3a3d1cc6-dfb2-460d-a176-4689899a34fb" />
+
+### 第十四次測試:
+
+- 老師畫面篇掉
+
+<img width="692" height="420" alt="圖片8" src="https://github.com/user-attachments/assets/c3e2e887-611d-4d87-a1b4-c3b5cffbcd72" />
+
+修改`HighlightEvent.cs`
+
+切換回標準模型後，視角重置到 3D 預設視角
+
+<img width="692" height="411" alt="圖片9" src="https://github.com/user-attachments/assets/fb74cac6-8c5a-407b-8f37-cefe62f5b633" />
+
+失敗，但手動調整第一位後，後面就置中了，不管他。
+
+- 	Revit、json選擇的介面不一樣，只能選資料夾，不能選特定檔案
+
+<img width="309" height="302" alt="圖片10" src="https://github.com/user-attachments/assets/08045fc5-e600-4405-8f8a-15fea1a6bd17" />  
+<img width="369" height="319" alt="圖片11" src="https://github.com/user-attachments/assets/3e547667-b5e4-47b5-9a4d-c3cd3af22228" />
+
+修改`TaPanel.cs`
+
+<img width="465" height="403" alt="圖片12" src="https://github.com/user-attachments/assets/94d8e766-7996-43b6-b6f4-59184950391e" />
+
+### 第十五次測試:選樓層比對
+
+第一步：`TaPanel.cs` 加樓層下拉選單
+
+第二步：`ComparisonEngine.cs` 加樓層篩選
+
+- 遇到問題: 分析 Z 座標時，把每個不同高度的構件都算成一層，閾值 1500mm 太小了，反而把同一層的不同高度構件分成不同層。
+
+修改方法：直接讀取 Revit 構件的「基準約束」樓層名稱
+
+第一步：在`Class1.cs`  ElementSnapshot 加 Level 欄位
+
+第二步：在 ParseDocument 裡讀取樓層
+
+第三步：`TaPanel.cs` 的 AnalyzeFloors 改成從 Level 欄位分析
+
+第四步：`ComparisonEngine.cs`  FilterByFloor 改成用 Level 欄位篩選
+
+<img width="525" height="578" alt="圖片13" src="https://github.com/user-attachments/assets/2dcdf36b-e7f6-42b9-ab9e-7749e81df538" />
+
+- 問題: 學生2改變梁尺寸沒被分類在樓層錯誤裡面
+
+<img width="412" height="326" alt="圖片14" src="https://github.com/user-attachments/assets/ed4bfb79-cdff-40aa-9e5c-b132faab6f1a" />
+
+梁的 Level 都是空字串 ""，表示讀不到梁的樓層。
+
+樓板：全部是 null
+
+修改`class.cs`，把讀取樓層那段換成多個參數嘗試
+
+<img width="692" height="381" alt="圖片15" src="https://github.com/user-attachments/assets/b6d22616-4d5e-4d8c-a9bf-d231e070584e" />
+
+只顯示選取樓層錯誤
+
+
 ---
 
 ## 檔案結構
