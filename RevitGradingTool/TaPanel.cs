@@ -20,10 +20,13 @@ namespace RevitGradingTool
         private Button loadStandardBtn;
         private RichTextBox errorDetailBox;
         private Button highlightBtn;
+        private ComboBox floorCombo;
 
         public ModelSnapshot StandardSnapshot { get; private set; }
         public List<StudentResult> Students { get; private set; } = new List<StudentResult>();
         public StudentResult SelectedStudent { get; private set; }
+        public string SelectedFloor => floorCombo?.SelectedItem?.ToString() ?? "\u5168\u90e8\u6a13\u5c64";
+        public Dictionary<string, (double MinZ, double MaxZ)> FloorRanges { get; private set; } = new Dictionary<string, (double, double)>();
 
         public event EventHandler<StudentResult> HighlightRequested;
         public event EventHandler ExportRequested;
@@ -58,6 +61,23 @@ namespace RevitGradingTool
                 Enabled = false
             };
             loadStudentsBtn.Click += LoadStudentsBtn_Click;
+
+            var floorLabel = new Label
+            {
+                Text = "\u6a13\u5c64\u7bc4\u570d\uff1a",
+                Dock = DockStyle.Top,
+                Height = 20
+            };
+
+            floorCombo = new ComboBox
+            {
+                Dock = DockStyle.Top,
+                Height = 30,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            floorCombo.Items.Add("\u5168\u90e8\u6a13\u5c64");
+            floorCombo.SelectedIndex = 0;
+            floorCombo.SelectedIndexChanged += (s, e) => RefreshStudentList();
 
             var listLabel = new Label
             {
@@ -125,7 +145,6 @@ namespace RevitGradingTool
             };
             clearBtn.Click += (s, e) => ClearRequested?.Invoke(this, e);
 
-            // 由下往上加（Dock.Top 是反序）
             this.Controls.Add(errorDetailBox);
             this.Controls.Add(detailLabel);
             this.Controls.Add(exportBtn);
@@ -134,6 +153,8 @@ namespace RevitGradingTool
             this.Controls.Add(errorCountLabel);
             this.Controls.Add(studentListBox);
             this.Controls.Add(listLabel);
+            this.Controls.Add(floorCombo);
+            this.Controls.Add(floorLabel);
             this.Controls.Add(loadStudentsBtn);
             this.Controls.Add(loadStandardBtn);
         }
@@ -152,6 +173,14 @@ namespace RevitGradingTool
 
             loadStandardBtn.Text = $"\u6a19\u6e96\u6a21\u578b\uff1a{System.IO.Path.GetFileName(dlg.FileName)}";
             loadStudentsBtn.Enabled = true;
+
+            // 分析樓層
+            floorCombo.Items.Clear();
+            floorCombo.Items.Add("\u5168\u90e8\u6a13\u5c64");
+            FloorRanges = AnalyzeFloors(StandardSnapshot);
+            foreach (var floor in FloorRanges.Keys)
+                floorCombo.Items.Add(floor);
+            floorCombo.SelectedIndex = 0;
         }
 
         private void LoadStudentsBtn_Click(object sender, EventArgs e)
@@ -167,7 +196,6 @@ namespace RevitGradingTool
             if (rvtDlg.ShowDialog() == DialogResult.OK)
                 rvtFiles = rvtDlg.FileNames;
 
-            // 再選 JSON 檔案
             var dlg = new OpenFileDialog
             {
                 Title = "\u9078\u64c7\u5b78\u751f JSON\uff08\u53ef\u591a\u9078\uff09",
@@ -186,7 +214,7 @@ namespace RevitGradingTool
                 var studentSnap = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
                     System.IO.File.ReadAllText(path));
 
-                var errors = engine.Compare(StandardSnapshot, studentSnap);
+                var errors = engine.Compare(StandardSnapshot, studentSnap, SelectedFloor, FloorRanges);
                 var result = new StudentResult
                 {
                     Name = System.IO.Path.GetFileNameWithoutExtension(path),
@@ -194,14 +222,57 @@ namespace RevitGradingTool
                     Errors = errors
                 };
 
-                // 自動對應 .rvt 路徑
-                // 自動對應 .rvt 路徑
                 string baseName = result.Name.Replace("_snapshot", "");
                 result.RvtPath = System.Array.Find(rvtFiles,
                     f => System.IO.Path.GetFileNameWithoutExtension(f) == baseName);
 
                 Students.Add(result);
                 studentListBox.Items.Add($"{result.Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");
+            }
+        }
+
+        private Dictionary<string, (double MinZ, double MaxZ)> AnalyzeFloors(ModelSnapshot snapshot)
+        {
+            var result = new Dictionary<string, (double MinZ, double MaxZ)>();
+
+            foreach (var el in snapshot.Elements)
+            {
+                if (string.IsNullOrEmpty(el.Level)) continue;
+                if (!result.ContainsKey(el.Level))
+                    result[el.Level] = (el.Z, el.Z);
+                else
+                {
+                    var r = result[el.Level];
+                    result[el.Level] = (Math.Min(r.MinZ, el.Z), Math.Max(r.MaxZ, el.Z));
+                }
+            }
+
+            // 加上緩衝區
+            var keys = new List<string>(result.Keys);
+            foreach (var key in keys)
+            {
+                var r = result[key];
+                result[key] = (r.MinZ - 300, r.MaxZ + 300);
+            }
+
+            return result;
+        }
+
+        private void RefreshStudentList()
+        {
+            if (StandardSnapshot == null || Students.Count == 0) return;
+
+            var engine = new ComparisonEngine();
+            studentListBox.Items.Clear();
+
+            for (int i = 0; i < Students.Count; i++)
+            {
+                var studentSnap = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
+                    System.IO.File.ReadAllText(Students[i].SnapshotPath));
+
+                var errors = engine.Compare(StandardSnapshot, studentSnap, SelectedFloor, FloorRanges);
+                Students[i].Errors = errors;
+                studentListBox.Items.Add($"{Students[i].Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");
             }
         }
 
@@ -221,7 +292,7 @@ namespace RevitGradingTool
                               err.Type == ErrorType.Extra ? "[\u591a\u9918]    " :
                               err.Type == ErrorType.WrongRotation ? "[\u65cb\u8f49\u932f\u8aa4]" :
                               err.Type == ErrorType.WrongPosition ? "[\u4f4d\u7f6e\u504f\u79fb]" :
-                                                                   "[\u5c6c\u6027\u932f\u8aa4]";
+                                                                    "[\u5c6c\u6027\u932f\u8aa4]";
                 errorDetailBox.AppendText($"{icon} {err.Category}\n");
                 errorDetailBox.AppendText($"  {err.Detail}\n");
                 errorDetailBox.AppendText($"  \u4f4d\u7f6e\uff1aX={err.X:F0}, Y={err.Y:F0}, Z={err.Z:F0}\n\n");

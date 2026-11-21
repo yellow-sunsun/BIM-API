@@ -37,17 +37,26 @@ namespace RevitGradingTool
             public double X, Y, Z;
         }
 
-        public List<CompareError> Compare(ModelSnapshot standard, ModelSnapshot student)
+        public List<CompareError> Compare(ModelSnapshot standard, ModelSnapshot student,
+            string selectedFloor = "\u5168\u90e8\u6a13\u5c64",
+            Dictionary<string, (double MinZ, double MaxZ)> floorRanges = null)
         {
             var errors = new List<CompareError>();
             var matched = new HashSet<int>();
 
-            XYZOffset offset = CalcOffset(standard, student);
-            ModelSnapshot correctedStudent = ApplyOffset(student, offset);
+            // ¼Ó¼h¿z¿ï
+            var stdElements = FilterByFloor(standard.Elements, selectedFloor, floorRanges);
+            var stuElements = FilterByFloor(student.Elements, selectedFloor, floorRanges);
 
-            for (int i = 0; i < standard.Elements.Count; i++)
+            var filteredStd = new ModelSnapshot { ModelName = standard.ModelName, Elements = stdElements };
+            var filteredStu = new ModelSnapshot { ModelName = student.ModelName, Elements = stuElements };
+
+            XYZOffset offset = CalcOffset(filteredStd, filteredStu);
+            ModelSnapshot correctedStudent = ApplyOffset(filteredStu, offset);
+
+            for (int i = 0; i < filteredStd.Elements.Count; i++)
             {
-                var stdEl = standard.Elements[i];
+                var stdEl = filteredStd.Elements[i];
                 int foundIdx = FindClosest(stdEl, correctedStudent.Elements, matched);
 
                 if (foundIdx == -1)
@@ -169,6 +178,16 @@ namespace RevitGradingTool
             errors.AddRange(toAdd);
 
             return errors;
+        }
+
+        private List<ElementSnapshot> FilterByFloor(List<ElementSnapshot> elements,
+            string selectedFloor,
+            Dictionary<string, (double MinZ, double MaxZ)> floorRanges)
+        {
+            if (selectedFloor == "\u5168\u90e8\u6a13\u5c64")
+                return new List<ElementSnapshot>(elements);
+
+            return elements.FindAll(el => el.Level == selectedFloor);
         }
 
         private XYZOffset CalcOffset(ModelSnapshot standard, ModelSnapshot student)

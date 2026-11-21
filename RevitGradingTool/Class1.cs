@@ -22,6 +22,7 @@ namespace RevitGradingTool
         public double Height { get; set; }
         public double Depth { get; set; }
         public double Rotation { get; set; }
+        public string Level { get; set; }  // 新增：構件所在樓層
     }
 
     public class ModelSnapshot
@@ -83,7 +84,6 @@ namespace RevitGradingTool
 
                     if (el.Location is LocationPoint lp)
                     {
-                        // 結構柱用 BoundingBox 中心取得正確的 Z 高度
                         if (el.Category?.Name == "\u7d50\u69cb\u67f1")
                         {
                             BoundingBoxXYZ bb = el.get_BoundingBox(null);
@@ -107,7 +107,6 @@ namespace RevitGradingTool
                             snap.Z = lp.Point.Z * 304.8;
                         }
 
-                        // 旋轉角度
                         if (el is FamilyInstance fiLp)
                         {
                             var transform = fiLp.GetTotalTransform();
@@ -125,7 +124,6 @@ namespace RevitGradingTool
                         snap.Y = mid.Y * 304.8;
                         snap.Z = mid.Z * 304.8;
 
-                        // 梁用 GetTotalTransform，牆用曲線方向
                         if (el is FamilyInstance fiLc)
                         {
                             var transform = fiLc.GetTotalTransform();
@@ -139,7 +137,6 @@ namespace RevitGradingTool
                     }
                     else
                     {
-                        // 樓板等用幾何中心
                         var geoOpt = new Options { ComputeReferences = false };
                         var geoElem = el.get_Geometry(geoOpt);
 
@@ -172,12 +169,35 @@ namespace RevitGradingTool
                             }
                         }
 
-                        // 樓板如果是 FamilyInstance 也取旋轉
                         if (el is FamilyInstance fiElse)
                         {
                             var transform = fiElse.GetTotalTransform();
                             snap.Rotation = Math.Atan2(transform.BasisX.Y, transform.BasisX.X) * (180.0 / Math.PI);
                         }
+                    }
+
+                    // 讀取構件所在樓層（不同類別用不同參數）
+                    Parameter levelParam = null;
+
+                    if (el.Category?.Name == "\u7d50\u69cb\u69cb\u67b6")
+                    {
+                        levelParam = el.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+                    }
+                    else if (el.Category?.Name == "\u6a13\u677f")
+                    {
+                        levelParam = el.get_Parameter(BuiltInParameter.LEVEL_PARAM);
+                    }
+                    else
+                    {
+                        levelParam = el.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)
+                                  ?? el.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT);
+                    }
+
+                    if (levelParam != null && levelParam.HasValue &&
+                        levelParam.StorageType == StorageType.ElementId)
+                    {
+                        var levelEl = doc.GetElement(levelParam.AsElementId());
+                        snap.Level = levelEl?.Name ?? "";
                     }
 
                     if (el is FamilyInstance fi)
@@ -202,7 +222,6 @@ namespace RevitGradingTool
 
             return snapshot;
         }
-
         private static double GetParamMM(Element el, BuiltInParameter bip)
         {
             Parameter p = el.get_Parameter(bip);
