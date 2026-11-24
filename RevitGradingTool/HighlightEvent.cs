@@ -13,6 +13,7 @@ namespace RevitGradingTool
         public UIApplication UIApp { get; set; }
 
         private HighlightManager _standardManager;
+        private Document _standardDoc;
         private HighlightManager _studentManager;
         private Document _studentDoc;
 
@@ -20,8 +21,12 @@ namespace RevitGradingTool
         {
             var standardDoc = app.ActiveUIDocument.Document;
 
-            if (_standardManager == null)
+            // 夹非家传筁笆蹲穦秨币穝夹非家ゅンぃ碞
+            if (_standardManager == null || !standardDoc.Equals(_standardDoc))
+            {
                 _standardManager = new HighlightManager(standardDoc);
+                _standardDoc = standardDoc;
+            }
 
             _standardManager.ClearAll();
 

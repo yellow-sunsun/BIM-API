@@ -7,8 +7,8 @@ namespace RevitGradingTool
     public class StudentResult
     {
         public string Name { get; set; }
-        public string SnapshotPath { get; set; }
         public string RvtPath { get; set; }
+        public ModelSnapshot Snapshot { get; set; }  // 從 .rvt 直接解析的快照（不必再存成 JSON）
         public List<CompareError> Errors { get; set; } = new List<CompareError>();
     }
 
@@ -32,6 +32,10 @@ namespace RevitGradingTool
         public event EventHandler ExportRequested;
         public event EventHandler ClearRequested;
 
+        // 使用者選好標準模型 .rvt 與學生模型後觸發，由 TaPanelCommand 交給 AutoImportEvent 開檔轉換
+        public event Action<string, string[]> ImportRequested;
+        private string standardRvtPath;
+
         public TaPanel()
         {
             InitializeUI();
@@ -47,7 +51,7 @@ namespace RevitGradingTool
 
             loadStandardBtn = new Button
             {
-                Text = "\u8f09\u5165\u6a19\u6e96\u6a21\u578b JSON",
+                Text = "\u9078\u64c7\u6a19\u6e96\u6a21\u578b\uff08.rvt\uff09",
                 Dock = DockStyle.Top,
                 Height = 36
             };
@@ -55,7 +59,7 @@ namespace RevitGradingTool
 
             loadStudentsBtn = new Button
             {
-                Text = "\u6279\u6b21\u8f09\u5165\u5b78\u751f JSON",
+                Text = "\u9078\u64c7\u5b78\u751f\u6a21\u578b(.rvt)",
                 Dock = DockStyle.Top,
                 Height = 36,
                 Enabled = false
@@ -83,7 +87,8 @@ namespace RevitGradingTool
             {
                 Text = "\u5b78\u751f\u6e05\u55ae\uff08\u9ede\u9078\u67e5\u770b\u932f\u8aa4\uff09",
                 Dock = DockStyle.Top,
-                Height = 20
+                Height = 32,
+                TextAlign = System.Drawing.ContentAlignment.BottomLeft
             };
 
             studentListBox = new ListBox
@@ -163,16 +168,54 @@ namespace RevitGradingTool
         {
             var dlg = new OpenFileDialog
             {
-                Title = "\u9078\u64c7\u6a19\u6e96\u6a21\u578b JSON",
-                Filter = "JSON files|*.json"
+                Title = "\u9078\u64c7\u6a19\u6e96\u6a21\u578b .rvt",
+                Filter = "Revit files|*.rvt"
             };
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
-            StandardSnapshot = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
-                System.IO.File.ReadAllText(dlg.FileName));
-
-            loadStandardBtn.Text = $"\u6a19\u6e96\u6a21\u578b\uff1a{System.IO.Path.GetFileName(dlg.FileName)}";
+            // 只記下路徑；實際開檔解析要等選完學生資料夾，在 Revit API 環境中一起執行
+            standardRvtPath = dlg.FileName;
+            loadStandardBtn.Text = $"\u6a19\u6e96\u6a21\u578b\uff1a{System.IO.Path.GetFileName(standardRvtPath)}";
             loadStudentsBtn.Enabled = true;
+        }
+
+        private void LoadStudentsBtn_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(standardRvtPath)) return;
+
+            var dlg = new OpenFileDialog
+            {
+                Title = "\u9078\u64c7\u5b78\u751f\u6a21\u578b(\u53ef\u8907\u9078)",
+                Filter = "Revit files|*.rvt",
+                Multiselect = true
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+
+            loadStandardBtn.Enabled = false;
+            loadStudentsBtn.Enabled = false;
+            ShowProgress("\u6e96\u5099\u958b\u555f\u6a21\u578b\u2026");
+            ImportRequested?.Invoke(standardRvtPath, dlg.FileNames);
+
+        }
+
+        // 以下由 AutoImportEvent 在 Revit 主執行緒呼叫
+
+        public void ShowProgress(string text)
+        {
+            errorCountLabel.Text = text;
+            errorCountLabel.Refresh();
+        }
+
+        public void EnableImportButtons()
+        {
+            loadStandardBtn.Enabled = true;
+            loadStudentsBtn.Enabled = !string.IsNullOrEmpty(standardRvtPath);
+        }
+
+        public void SetStandard(ModelSnapshot standard, string fileName)
+        {
+            StandardSnapshot = standard;
+            loadStandardBtn.Text = $"\u6a19\u6e96\u6a21\u578b\uff1a{fileName}";
 
             // 分析樓層
             floorCombo.Items.Clear();
@@ -180,55 +223,18 @@ namespace RevitGradingTool
             FloorRanges = AnalyzeFloors(StandardSnapshot);
             foreach (var floor in FloorRanges.Keys)
                 floorCombo.Items.Add(floor);
-            floorCombo.SelectedIndex = 0;
+            floorCombo.SelectedIndex = 0;  // 會觸發 RefreshStudentList，此時學生清單還是舊的
         }
 
-        private void LoadStudentsBtn_Click(object sender, EventArgs e)
+        public void SetStudents(List<StudentResult> students)
         {
-            var rvtDlg = new OpenFileDialog
-            {
-                Title = "\u9078\u64c7\u5b78\u751f .rvt \u6a94\u6848\uff08\u53ef\u591a\u9078\uff09",
-                Filter = "Revit files|*.rvt",
-                Multiselect = true,
-                InitialDirectory = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop)
-            };
-            string[] rvtFiles = new string[0];
-            if (rvtDlg.ShowDialog() == DialogResult.OK)
-                rvtFiles = rvtDlg.FileNames;
+            Students = students;
+            SelectedStudent = null;
+            highlightBtn.Enabled = false;
+            errorDetailBox.Clear();
 
-            var dlg = new OpenFileDialog
-            {
-                Title = "\u9078\u64c7\u5b78\u751f JSON\uff08\u53ef\u591a\u9078\uff09",
-                Filter = "JSON files|*.json",
-                Multiselect = true
-            };
-            if (dlg.ShowDialog() != DialogResult.OK) return;
-
-            Students.Clear();
-            studentListBox.Items.Clear();
-
-            var engine = new ComparisonEngine();
-
-            foreach (var path in dlg.FileNames)
-            {
-                var studentSnap = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
-                    System.IO.File.ReadAllText(path));
-
-                var errors = engine.Compare(StandardSnapshot, studentSnap, SelectedFloor, FloorRanges);
-                var result = new StudentResult
-                {
-                    Name = System.IO.Path.GetFileNameWithoutExtension(path),
-                    SnapshotPath = path,
-                    Errors = errors
-                };
-
-                string baseName = result.Name.Replace("_snapshot", "");
-                result.RvtPath = System.Array.Find(rvtFiles,
-                    f => System.IO.Path.GetFileNameWithoutExtension(f) == baseName);
-
-                Students.Add(result);
-                studentListBox.Items.Add($"{result.Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");
-            }
+            RefreshStudentList();
+            ShowProgress($"\u5b8c\u6210\uff1a\u5171\u6bd4\u5c0d {Students.Count} \u4f4d\u5b78\u751f\uff0c\u9ede\u9078\u67e5\u770b\u932f\u8aa4");
         }
 
         private Dictionary<string, (double MinZ, double MaxZ)> AnalyzeFloors(ModelSnapshot snapshot)
@@ -260,19 +266,16 @@ namespace RevitGradingTool
 
         private void RefreshStudentList()
         {
+            studentListBox.Items.Clear();
             if (StandardSnapshot == null || Students.Count == 0) return;
 
             var engine = new ComparisonEngine();
-            studentListBox.Items.Clear();
 
             for (int i = 0; i < Students.Count; i++)
             {
-                var studentSnap = Newtonsoft.Json.JsonConvert.DeserializeObject<ModelSnapshot>(
-                    System.IO.File.ReadAllText(Students[i].SnapshotPath));
-
-                var errors = engine.Compare(StandardSnapshot, studentSnap, SelectedFloor, FloorRanges);
+                var errors = engine.Compare(StandardSnapshot, Students[i].Snapshot, SelectedFloor, FloorRanges);
                 Students[i].Errors = errors;
-                studentListBox.Items.Add($"{Students[i].Name}　　\u932f\u8aa4\uff1a{errors.Count} \u500b");
+                studentListBox.Items.Add($"{Students[i].Name}\u3000\u3000\u932f\u8aa4\uff1a{errors.Count} \u500b");
             }
         }
 
