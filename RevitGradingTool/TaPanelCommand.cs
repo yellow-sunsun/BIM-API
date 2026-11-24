@@ -36,6 +36,7 @@ namespace RevitGradingTool
             // 標色功能
             panel.HighlightRequested += (s, student) =>
             {
+                highlightEvent.Mode = HighlightMode.Highlight;
                 highlightEvent.Errors = student.Errors;
                 highlightEvent.Standard = panel.StandardSnapshot;
                 highlightEvent.StudentRvtPath = student.RvtPath;
@@ -46,9 +47,22 @@ namespace RevitGradingTool
             // 清除標色
             panel.ClearRequested += (s, e) =>
             {
+                highlightEvent.Mode = HighlightMode.Highlight;
                 highlightEvent.Errors = new List<CompareError>();
                 highlightEvent.Standard = panel.StandardSnapshot;
                 highlightEvent.StudentRvtPath = null;
+                highlightEvent.UIApp = uiApp;
+                exEvent.Raise();
+            };
+
+            // 放大到某個錯誤（顯示目前錯誤 / 下一個錯誤）
+            panel.FocusRequested += (student, index) =>
+            {
+                highlightEvent.Mode = HighlightMode.Focus;
+                highlightEvent.FocusIndex = index;
+                highlightEvent.Errors = student.Errors;
+                highlightEvent.Standard = panel.StandardSnapshot;
+                highlightEvent.StudentRvtPath = student.RvtPath;
                 highlightEvent.UIApp = uiApp;
                 exEvent.Raise();
             };
