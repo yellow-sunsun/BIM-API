@@ -1,45 +1,96 @@
 using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RevitGradingTool
 {
     public class HighlightManager
     {
-        private Document _doc;
-        private List<ElementId> _highlightedIds = new List<ElementId>();
-        private List<ElementId> _textNoteIds = new List<ElementId>();
+        private const double MM = 1.0 / 304.8;
+        // 放大錯誤時的剖面框（以錯誤為中心，跟著鏡頭方向旋轉）
+        private const double FOCUS_SIDE = 4000 * MM;      // 左右各 4m
+        private const double FOCUS_BACK = 4000 * MM;      // 錯誤後方（建築內側）4m
+        private const double FOCUS_FRONT = 1000 * MM;     // 錯誤前方（鏡頭那側）只留 1m，避免外牆擋住
+        private const double FOCUS_BELOW = 2500 * MM;     // 錯誤下方 2.5m
+        private const double CAMERA_PITCH_DEG = 35;       // 鏡頭往下俯視的角度
 
-        public HighlightManager(Document doc)
+        private readonly Document _doc;
+        private readonly View _view;   // 標色所在的視圖（3D 視圖）
+        private readonly List<ElementId> _highlightedIds = new List<ElementId>();
+        private readonly List<ElementId> _markerIds = new List<ElementId>();
+        // 每個錯誤在這個模型中對應的元件（標色的構件或標記方塊），放大時用來選取
+        private readonly Dictionary<CompareError, ElementId> _errorElements = new Dictionary<CompareError, ElementId>();
+
+        // 原本的剖面框與視角，清除時還原
+        private bool _sectionBoxSaved;
+        private bool _origSectionBoxActive;
+        private BoundingBoxXYZ _origSectionBox;
+        private ViewOrientation3D _origOrientation;
+
+        public HighlightManager(Document doc, View view)
         {
             _doc = doc;
+            _view = view ?? doc.ActiveView;
+        }
+
+        public Document Doc => _doc;
+
+        // 找預設的 {3D} 視圖，沒有的話建立一個
+        public static View3D Get3DView(Document doc)
+        {
+            var views = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
+                .Where(v => !v.IsTemplate && !v.IsPerspective)
+                .OrderBy(v => v.Name == "{3D}" ? 0 : v.Name.StartsWith("{3D") ? 1 : 2)
+                .ThenBy(v => v.Name)
+                .ToList();
+            if (views.Count > 0) return views[0];
+
+            var vft = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>()
+                .FirstOrDefault(t => t.ViewFamily == ViewFamily.ThreeDimensional);
+            if (vft == null) return null;
+            using (var tx = new Transaction(doc, "\u5efa\u7acb 3D \u8996\u5716"))
+            {
+                tx.Start();
+                var v = View3D.CreateIsometric(doc, vft.Id);
+                tx.Commit();
+                return v;
+            }
         }
 
         public void ClearAll()
         {
-            using (var tx = new Transaction(_doc, "清除標色"))
+            using (var tx = new Transaction(_doc, "\u6e05\u9664\u6a19\u8272"))
             {
                 tx.Start();
 
                 foreach (var id in _highlightedIds)
                 {
-                    var el = _doc.GetElement(id);
-                    if (el != null)
-                        _doc.ActiveView.SetElementOverrides(id, new OverrideGraphicSettings());
+                    if (_doc.GetElement(id) != null)
+                        _view.SetElementOverrides(id, new OverrideGraphicSettings());
                 }
 
-                foreach (var id in _textNoteIds)
+                foreach (var id in _markerIds)
                 {
-                    var el = _doc.GetElement(id);
-                    if (el != null)
+                    if (_doc.GetElement(id) != null)
                         _doc.Delete(id);
+                }
+
+                if (_sectionBoxSaved && _view is View3D v3)
+                {
+                    if (_origSectionBox != null) v3.SetSectionBox(_origSectionBox);
+                    v3.IsSectionBoxActive = _origSectionBoxActive;
+                    if (_origOrientation != null && !v3.IsLocked) v3.SetOrientation(_origOrientation);
+                    _sectionBoxSaved = false;
                 }
 
                 tx.Commit();
             }
 
             _highlightedIds.Clear();
-            _textNoteIds.Clear();
+            _markerIds.Clear();
+            _errorElements.Clear();
         }
 
         // 標準模型標色（用標準座標）
@@ -47,39 +98,22 @@ namespace RevitGradingTool
         {
             ClearAll();
 
-            using (var tx = new Transaction(_doc, "標色學生錯誤"))
+            using (var tx = new Transaction(_doc, "\u6a19\u8272\u5b78\u751f\u932f\u8aa4"))
             {
                 tx.Start();
-
-                var textNoteTypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
-
                 foreach (var err in errors)
                 {
-                    XYZ position = new XYZ(err.X / 304.8, err.Y / 304.8, err.Z / 304.8);
-
+                    XYZ position = new XYZ(err.X * MM, err.Y * MM, err.Z * MM);
                     if (err.Type == ErrorType.Extra)
-                    {
-                        var textNoteOptions = new TextNoteOptions
-                        {
-                            HorizontalAlignment = HorizontalTextAlignment.Center,
-                            TypeId = textNoteTypeId
-                        };
-                        TextNote note = TextNote.Create(
-                            _doc, _doc.ActiveView.Id, position,
-                            "\u2b06 \u591a\u9918\u69cb\u4ef6", textNoteOptions);
-                        _textNoteIds.Add(note.Id);
-                    }
+                        AddMarker(err, position, "\u2b06 \u591a\u9918\u69cb\u4ef6", new Color(160, 32, 240));
                     else
-                    {
-                        ApplyColor(err, position);
-                    }
+                        ApplyColor(err, position, err.StdElementId);
                 }
-
                 tx.Commit();
             }
         }
 
-        // 學生模型標色（用學生座標）
+        // 學生模型標色（用學生模型的原始座標，避免整棟偏移時標錯位置）
         public void HighlightStudent(List<CompareError> errors)
         {
             ClearAll();
@@ -87,59 +121,167 @@ namespace RevitGradingTool
             using (var tx = new Transaction(_doc, "\u6a19\u8272\u5b78\u751f\u932f\u8aa4"))
             {
                 tx.Start();
-
-                var textNoteTypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
-
                 foreach (var err in errors)
                 {
-                    XYZ position = new XYZ(err.StudentX / 304.8, err.StudentY / 304.8, err.StudentZ / 304.8);
-
-                    if (err.Type == ErrorType.Extra)
-                    {
-                        var textNoteOptions = new TextNoteOptions
-                        {
-                            HorizontalAlignment = HorizontalTextAlignment.Center,
-                            TypeId = textNoteTypeId
-                        };
-                        TextNote note = TextNote.Create(
-                            _doc, _doc.ActiveView.Id, position,
-                            "\u2b06 \u591a\u9918\u69cb\u4ef6", textNoteOptions);
-                        _textNoteIds.Add(note.Id);
-                    }
-                    else if (err.Type == ErrorType.Missing)
-                    {
-                        // 在學生模型對應位置放箭頭提示
-                        var textNoteOptions = new TextNoteOptions
-                        {
-                            HorizontalAlignment = HorizontalTextAlignment.Center,
-                            TypeId = textNoteTypeId
-                        };
-                        TextNote note = TextNote.Create(
-                            _doc, _doc.ActiveView.Id, position,
-                            "\u2b07 \u6b64\u8655\u7f3a\u5c11\u69cb\u4ef6", textNoteOptions);
-                        _textNoteIds.Add(note.Id);
-                        continue;
-                    }
+                    XYZ position = new XYZ(err.RawStudentX * MM, err.RawStudentY * MM, err.RawStudentZ * MM);
+                    if (err.Type == ErrorType.Missing)
+                        AddMarker(err, position, "\u2b07 \u6b64\u8655\u7f3a\u5c11\u69cb\u4ef6", new Color(255, 0, 0));
                     else
-                    {
-                        ApplyColor(err, position);
-                    }
+                        ApplyColor(err, position, err.StuElementId);
                 }
-
                 tx.Commit();
             }
         }
 
-        private void ApplyColor(CompareError err, XYZ position)
+        // 剖面框頂部要切在錯誤上方多少：梁被上方樓板蓋住，要切得很低；樓板本身薄
+        private static double TopCut(string category)
+        {
+            if (category == "\u7d50\u69cb\u69cb\u67b6") return 150 * MM;
+            if (category == "\u6a13\u677f") return 600 * MM;
+            return 1000 * MM;
+        }
+
+        // 放大到某個錯誤：
+        // 1. 鏡頭從建築外側、往下俯視 35° 對準錯誤，錯誤位於畫面正中央
+        // 2. 剖面框跟著鏡頭方向旋轉，鏡頭那一側和錯誤上方切得很近，外牆、上層樓板不會擋住
+        // 3. 視窗放大到剖面框範圍，並選取該構件
+        public void FocusOn(CompareError err, XYZ centerMm, XYZ buildingCenterMm, bool select)
+        {
+            var v3 = _view as View3D;
+            XYZ c = new XYZ(centerMm.X * MM, centerMm.Y * MM, centerMm.Z * MM);
+
+            // 「往外」方向：從建築中心指向錯誤（水平），鏡頭放在這一側往內看
+            XYZ outward = new XYZ(c.X - buildingCenterMm.X * MM, c.Y - buildingCenterMm.Y * MM, 0);
+            outward = outward.GetLength() < 1e-6 ? new XYZ(1, -1, 0).Normalize() : outward.Normalize();
+            XYZ right = new XYZ(outward.Y, -outward.X, 0);   // right x outward = Z（右手座標）
+            double top = TopCut(err.Category);
+
+            XYZ min = c - right * FOCUS_SIDE - outward * FOCUS_BACK - XYZ.BasisZ * FOCUS_BELOW;
+            XYZ max = c + right * FOCUS_SIDE + outward * FOCUS_FRONT + XYZ.BasisZ * top;
+
+            if (v3 != null)
+            {
+                using (var tx = new Transaction(_doc, "\u653e\u5927\u5230\u932f\u8aa4"))
+                {
+                    tx.Start();
+                    if (!_sectionBoxSaved)
+                    {
+                        _origSectionBoxActive = v3.IsSectionBoxActive;
+                        _origSectionBox = v3.GetSectionBox();
+                        _origOrientation = v3.GetOrientation();
+                        _sectionBoxSaved = true;
+                    }
+
+                    var t = Transform.Identity;
+                    t.Origin = c;
+                    t.BasisX = right;
+                    t.BasisY = outward;
+                    t.BasisZ = XYZ.BasisZ;
+                    v3.SetSectionBox(new BoundingBoxXYZ
+                    {
+                        Transform = t,
+                        Min = new XYZ(-FOCUS_SIDE, -FOCUS_BACK, -FOCUS_BELOW),
+                        Max = new XYZ(FOCUS_SIDE, FOCUS_FRONT, top)
+                    });
+                    v3.IsSectionBoxActive = true;
+
+                    if (!v3.IsLocked)
+                    {
+                        double pitch = CAMERA_PITCH_DEG * Math.PI / 180.0;
+                        XYZ forward = new XYZ(-outward.X * Math.Cos(pitch), -outward.Y * Math.Cos(pitch), -Math.Sin(pitch)).Normalize();
+                        XYZ up = (XYZ.BasisZ - forward * forward.DotProduct(XYZ.BasisZ)).Normalize();
+                        XYZ eye = c - forward * (30000 * MM);
+                        v3.SetOrientation(new ViewOrientation3D(eye, up, forward));
+                    }
+                    tx.Commit();
+                }
+            }
+
+            var uiDoc = new UIDocument(_doc);
+            var uiView = uiDoc.GetOpenUIViews().FirstOrDefault(u => u.ViewId == _view.Id);
+            if (uiView != null)
+            {
+                // 以錯誤為中心、放大到剖面框大小（四周留一點邊）
+                double r = FOCUS_SIDE * 1.1;
+                uiView.ZoomAndCenterRectangle(c - new XYZ(r, r, r), c + new XYZ(r, r, r));
+            }
+
+            if (select && _errorElements.TryGetValue(err, out ElementId id) && _doc.GetElement(id) != null)
+                uiDoc.Selection.SetElementIds(new List<ElementId> { id });
+        }
+
+        // 在 3D 視圖放一個半透明方塊當標記（3D 視圖不能放文字註記）；平面圖則放文字
+        private void AddMarker(CompareError err, XYZ position, string label, Color color)
+        {
+            ElementId id;
+            if (_view is View3D)
+            {
+                double half = 400 * MM;
+                var p0 = new XYZ(position.X - half, position.Y - half, position.Z - half);
+                var loop = new CurveLoop();
+                loop.Append(Line.CreateBound(p0, p0 + new XYZ(2 * half, 0, 0)));
+                loop.Append(Line.CreateBound(p0 + new XYZ(2 * half, 0, 0), p0 + new XYZ(2 * half, 2 * half, 0)));
+                loop.Append(Line.CreateBound(p0 + new XYZ(2 * half, 2 * half, 0), p0 + new XYZ(0, 2 * half, 0)));
+                loop.Append(Line.CreateBound(p0 + new XYZ(0, 2 * half, 0), p0));
+                var solid = GeometryCreationUtilities.CreateExtrusionGeometry(
+                    new List<CurveLoop> { loop }, XYZ.BasisZ, 2 * half);
+
+                var ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                ds.SetShape(new GeometryObject[] { solid });
+                ds.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.Set(label);
+                id = ds.Id;
+
+                var ovr = new OverrideGraphicSettings();
+                ovr.SetSurfaceForegroundPatternColor(color);
+                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+                ovr.SetProjectionLineColor(color);
+                ovr.SetSurfaceTransparency(30);
+                _view.SetElementOverrides(id, ovr);
+            }
+            else
+            {
+                var options = new TextNoteOptions
+                {
+                    HorizontalAlignment = HorizontalTextAlignment.Center,
+                    TypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType)
+                };
+                id = TextNote.Create(_doc, _view.Id, position, label, options).Id;
+            }
+            _markerIds.Add(id);
+            _errorElements[err] = id;
+        }
+
+        private void ApplyColor(CompareError err, XYZ position, long elementId)
+        {
+            // 優先用比對時記下的元件 Id；找不到時才用座標找最近的構件
+            Element bestEl = elementId != 0 ? _doc.GetElement(new ElementId(elementId)) : null;
+            if (bestEl == null || bestEl.Category?.Name != err.Category)
+                bestEl = FindByPosition(err, position);
+            if (bestEl == null) return;
+
+            var ovr = new OverrideGraphicSettings();
+            if (err.Type == ErrorType.Missing || err.Type == ErrorType.Extra)
+                ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
+            else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
+                ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
+            else
+                ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
+            ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
+
+            _view.SetElementOverrides(bestEl.Id, ovr);
+            _highlightedIds.Add(bestEl.Id);
+            _errorElements[err] = bestEl.Id;
+        }
+
+        private Element FindByPosition(CompareError err, XYZ position)
         {
             double tol = (err.Category == "\u6a13\u677f" || err.Category == "\u7246")
-                ? 500.0 / 304.8 : 50.0 / 304.8;
+                ? 500.0 * MM : 50.0 * MM;
 
-            var collector = new FilteredElementCollector(_doc).WhereElementIsNotElementType();
             Element bestEl = null;
             double bestDist = double.MaxValue;
 
-            foreach (Element el in collector)
+            foreach (Element el in new FilteredElementCollector(_doc).WhereElementIsNotElementType())
             {
                 if (el.Category?.Name != err.Category) continue;
 
@@ -163,30 +305,7 @@ namespace RevitGradingTool
 
                 if (dist < bestDist) { bestDist = dist; bestEl = el; }
             }
-
-            if (bestEl != null)
-            {
-                var ovr = new OverrideGraphicSettings();
-
-                if (err.Type == ErrorType.Missing)
-                {
-                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
-                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                }
-                else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
-                {
-                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
-                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                }
-                else
-                {
-                    ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
-                    ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                }
-
-                _doc.ActiveView.SetElementOverrides(bestEl.Id, ovr);
-                _highlightedIds.Add(bestEl.Id);
-            }
+            return bestEl;
         }
 
         private XYZ GetElementCenter(Element el)
@@ -234,16 +353,17 @@ namespace RevitGradingTool
             return null;
         }
 
+        private ElementId _solidFillId;
+
         private ElementId GetSolidFillId()
         {
-            var patterns = new FilteredElementCollector(_doc)
-                .OfClass(typeof(FillPatternElement));
-            foreach (FillPatternElement fp in patterns)
+            if (_solidFillId != null) return _solidFillId;
+            foreach (FillPatternElement fp in new FilteredElementCollector(_doc).OfClass(typeof(FillPatternElement)))
             {
                 if (fp.GetFillPattern().IsSolidFill)
-                    return fp.Id;
+                    return _solidFillId = fp.Id;
             }
-            return ElementId.InvalidElementId;
+            return _solidFillId = ElementId.InvalidElementId;
         }
     }
 }

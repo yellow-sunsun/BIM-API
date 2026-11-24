@@ -58,6 +58,11 @@ namespace RevitGradingTool
         {
             var snapshot = new ModelSnapshot { ModelName = doc.Title };
 
+            // 所有樓層依高度排序，找不到樓層參數時用高度判斷
+            var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                .OrderBy(l => l.ProjectElevation).ToList();
+
+
             var categories = new[]
             {
                 BuiltInCategory.OST_StructuralColumns,
@@ -82,8 +87,21 @@ namespace RevitGradingTool
                         Category = el.Category?.Name ?? "Unknown"
                     };
 
-                    if (el.Location is LocationPoint lp)
+                    // 內建族群（in-place）的定位點固定在專案原點 (0,0,0)，跟構件實際位置無關，
+                    // 整棟偏移時定位點也不會跟著動。改用外框中心當位置
+                    BoundingBoxXYZ inPlaceBox = (el is FamilyInstance fiIp && fiIp.Symbol?.Family?.IsInPlace == true)
+                        ? el.get_BoundingBox(null) : null;
+
+                    if (inPlaceBox != null)
                     {
+                        snap.X = ((inPlaceBox.Min.X + inPlaceBox.Max.X) / 2) * 304.8;
+                        snap.Y = ((inPlaceBox.Min.Y + inPlaceBox.Max.Y) / 2) * 304.8;
+                        snap.Z = ((inPlaceBox.Min.Z + inPlaceBox.Max.Z) / 2) * 304.8;
+                        snap.Rotation = 0;
+                    }
+                    else if (el.Location is LocationPoint lp)
+                    {
+
                         if (el.Category?.Name == "\u7d50\u69cb\u67f1")
                         {
                             BoundingBoxXYZ bb = el.get_BoundingBox(null);
@@ -137,6 +155,7 @@ namespace RevitGradingTool
                     }
                     else
                     {
+                        bool positioned = false;
                         var geoOpt = new Options { ComputeReferences = false };
                         var geoElem = el.get_Geometry(geoOpt);
 
@@ -166,6 +185,20 @@ namespace RevitGradingTool
                                 snap.X = ((minX + maxX) / 2) * 304.8;
                                 snap.Y = ((minY + maxY) / 2) * 304.8;
                                 snap.Z = ((minZ + maxZ) / 2) * 304.8;
+                                positioned = true;
+                            }
+                        }
+
+                        // 族群（例如內建族群的梁）的幾何包在 GeometryInstance 裡，上面抓不到實體，
+                        // 原本會留在 (0,0,0)：所有這類構件擠在原點、整棟偏移時全部被判錯。改用外框中心
+                        if (!positioned)
+                        {
+                            BoundingBoxXYZ bbox = el.get_BoundingBox(null);
+                            if (bbox != null)
+                            {
+                                snap.X = ((bbox.Min.X + bbox.Max.X) / 2) * 304.8;
+                                snap.Y = ((bbox.Min.Y + bbox.Max.Y) / 2) * 304.8;
+                                snap.Z = ((bbox.Min.Z + bbox.Max.Z) / 2) * 304.8;
                             }
                         }
 
@@ -200,6 +233,14 @@ namespace RevitGradingTool
                         snap.Level = levelEl?.Name ?? "";
                     }
 
+                    // 參數讀不到樓層（例如內建族群）：先看元素本身的 LevelId，再依高度找所在樓層
+                    if (string.IsNullOrEmpty(snap.Level))
+                    {
+                        Level lv = el.LevelId != ElementId.InvalidElementId ? doc.GetElement(el.LevelId) as Level : null;
+                        if (lv == null) lv = LevelAtHeight(levels, snap.Z / 304.8);
+                        snap.Level = lv?.Name ?? "";
+                    }
+
                     if (el is FamilyInstance fi)
                         snap.FamilyType = fi.Symbol?.Name ?? "";
                     else
@@ -222,7 +263,22 @@ namespace RevitGradingTool
 
             return snapshot;
         }
+        // 依高度找構件所在樓層：取「高度 <= 構件中心 + 0.5m」的最高樓層。
+        // 多 0.5m 是因為梁、樓板的中心略低於它所屬的樓層線
+        private static Level LevelAtHeight(List<Level> levels, double zFt)
+        {
+            if (levels.Count == 0) return null;
+            Level found = levels[0];
+            foreach (var lv in levels)
+            {
+                if (lv.ProjectElevation <= zFt + 500 / 304.8) found = lv;
+                else break;
+            }
+            return found;
+        }
+
         private static double GetParamMM(Element el, BuiltInParameter bip)
+
         {
             Parameter p = el.get_Parameter(bip);
             if (p != null && p.HasValue && p.StorageType == StorageType.Double)
