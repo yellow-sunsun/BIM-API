@@ -192,34 +192,104 @@ namespace RevitGradingTool
 
         private XYZOffset CalcOffset(ModelSnapshot standard, ModelSnapshot student)
         {
-            foreach (var stdEl in standard.Elements)
+            // 配對投票：拿同類別的每一對構件（標準 × 學生）各算一個候選偏移，
+            // 選「套用後能對上最多構件」的那個。不受建模順序影響，
+            // 學生少幾根或多幾根構件也不會把偏移拉走（平均座標會被拉偏）。
+            // 優先用結構柱投票；沒有柱的樓層（例如屋頂層）改用梁、牆、樓板
+            var priority = new List<string> { "\u7d50\u69cb\u67f1", "\u7d50\u69cb\u69cb\u67b6", "\u7246", "\u6a13\u677f" };
+            foreach (var el in standard.Elements)
+                if (!priority.Contains(el.Category)) priority.Add(el.Category);
+
+            foreach (var cat in priority)
             {
-                if (stdEl.Category != "\u7d50\u69cb\u67f1") continue;
-                foreach (var stuEl in student.Elements)
-                {
-                    if (stuEl.Category != "\u7d50\u69cb\u67f1") continue;
-                    return new XYZOffset
-                    {
-                        X = stdEl.X - stuEl.X,
-                        Y = stdEl.Y - stuEl.Y,
-                        Z = stdEl.Z - stuEl.Z
-                    };
-                }
-            }
-            foreach (var stdEl in standard.Elements)
-            {
-                foreach (var stuEl in student.Elements)
-                {
-                    if (stdEl.Category != stuEl.Category) continue;
-                    return new XYZOffset
-                    {
-                        X = stdEl.X - stuEl.X,
-                        Y = stdEl.Y - stuEl.Y,
-                        Z = stdEl.Z - stuEl.Z
-                    };
-                }
+                var stdEls = standard.Elements.FindAll(e => e.Category == cat);
+                var stuEls = student.Elements.FindAll(e => e.Category == cat);
+                if (stdEls.Count == 0 || stuEls.Count == 0) continue;
+                return VoteOffset(stdEls, stuEls, GetTolerance(cat));
             }
             return new XYZOffset { X = 0, Y = 0, Z = 0 };
+        }
+
+        private XYZOffset VoteOffset(List<ElementSnapshot> std, List<ElementSnapshot> stu, double tolerance)
+        {
+            XYZOffset best = null;
+            int bestScore = -1;
+            double bestResidual = double.MaxValue;
+
+            foreach (var s in std)
+            {
+                foreach (var t in stu)
+                {
+                    var cand = new XYZOffset { X = s.X - t.X, Y = s.Y - t.Y, Z = s.Z - t.Z };
+                    int score;
+                    double residual;
+                    ScoreOffset(std, stu, cand, tolerance, out score, out residual);
+
+                    // 得票相同時取殘差較小者，再相同時取偏移量較小者，確保結果與順序無關
+                    bool better = score > bestScore
+                        || (score == bestScore && residual < bestResidual - 1e-6)
+                        || (score == bestScore && Math.Abs(residual - bestResidual) <= 1e-6 && Length(cand) < Length(best));
+                    if (better)
+                    {
+                        best = cand;
+                        bestScore = score;
+                        bestResidual = residual;
+                    }
+                }
+            }
+
+            // 微調：用對上的構件的平均差修正偏移，讓結果更精準
+            double sx = 0, sy = 0, sz = 0;
+            int n = 0;
+            foreach (var s in std)
+            {
+                var t = Nearest(s, stu, best, tolerance);
+                if (t == null) continue;
+                sx += s.X - t.X; sy += s.Y - t.Y; sz += s.Z - t.Z; n++;
+            }
+            if (n > 0) return new XYZOffset { X = sx / n, Y = sy / n, Z = sz / n };
+            return best;
+        }
+
+        // 套用偏移後，有幾個標準構件在容許範圍內找得到學生構件，以及其距離總和
+        private void ScoreOffset(List<ElementSnapshot> std, List<ElementSnapshot> stu, XYZOffset d,
+            double tolerance, out int score, out double residual)
+        {
+            score = 0;
+            residual = 0;
+            foreach (var s in std)
+            {
+                var t = Nearest(s, stu, d, tolerance);
+                if (t == null) continue;
+                score++;
+                residual += Dist(s, t, d);
+            }
+        }
+
+        private ElementSnapshot Nearest(ElementSnapshot s, List<ElementSnapshot> stu, XYZOffset d, double tolerance)
+        {
+            ElementSnapshot best = null;
+            double bestDist = double.MaxValue;
+            foreach (var t in stu)
+            {
+                double xy = Math.Sqrt(Math.Pow(t.X + d.X - s.X, 2) + Math.Pow(t.Y + d.Y - s.Y, 2));
+                double z = Math.Abs(t.Z + d.Z - s.Z);
+                if (xy > tolerance || z > tolerance) continue;
+                double dist = Math.Sqrt(xy * xy + z * z);
+                if (dist < bestDist) { bestDist = dist; best = t; }
+            }
+            return best;
+        }
+
+        private double Dist(ElementSnapshot s, ElementSnapshot t, XYZOffset d)
+        {
+            return Math.Sqrt(Math.Pow(t.X + d.X - s.X, 2) + Math.Pow(t.Y + d.Y - s.Y, 2) + Math.Pow(t.Z + d.Z - s.Z, 2));
+        }
+
+        private double Length(XYZOffset d)
+        {
+            if (d == null) return double.MaxValue;
+            return Math.Sqrt(d.X * d.X + d.Y * d.Y + d.Z * d.Z);
         }
 
         private ModelSnapshot ApplyOffset(ModelSnapshot student, XYZOffset offset)

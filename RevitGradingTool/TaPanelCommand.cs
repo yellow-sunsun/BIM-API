@@ -22,6 +22,17 @@ namespace RevitGradingTool
 
             var panel = new TaPanel();
 
+            // 自動匯入：選標準模型 .rvt + 學生模型（可複選）後，開檔轉快照並比對
+            var importEvent = new AutoImportEvent { Panel = panel };
+            var importExEvent = ExternalEvent.Create(importEvent);
+            panel.ImportRequested += (standardPath, studentFiles) =>
+            {
+                importEvent.StandardRvtPath = standardPath;
+                importEvent.StudentRvtPaths = studentFiles;
+
+                importExEvent.Raise();
+            };
+
             // 標色功能
             panel.HighlightRequested += (s, student) =>
             {
