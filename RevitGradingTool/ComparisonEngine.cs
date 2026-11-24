@@ -192,20 +192,30 @@ namespace RevitGradingTool
 
         private XYZOffset CalcOffset(ModelSnapshot standard, ModelSnapshot student)
         {
-            foreach (var stdEl in standard.Elements)
+            // 用所有結構柱的平均座標算偏移，不受順序影響
+            var stdCols = standard.Elements.FindAll(e => e.Category == "\u7d50\u69cb\u67f1");
+            var stuCols = student.Elements.FindAll(e => e.Category == "\u7d50\u69cb\u67f1");
+
+            if (stdCols.Count > 0 && stuCols.Count > 0)
             {
-                if (stdEl.Category != "\u7d50\u69cb\u67f1") continue;
-                foreach (var stuEl in student.Elements)
+                double stdAvgX = 0, stdAvgY = 0, stdAvgZ = 0;
+                double stuAvgX = 0, stuAvgY = 0, stuAvgZ = 0;
+
+                foreach (var el in stdCols) { stdAvgX += el.X; stdAvgY += el.Y; stdAvgZ += el.Z; }
+                foreach (var el in stuCols) { stuAvgX += el.X; stuAvgY += el.Y; stuAvgZ += el.Z; }
+
+                stdAvgX /= stdCols.Count; stdAvgY /= stdCols.Count; stdAvgZ /= stdCols.Count;
+                stuAvgX /= stuCols.Count; stuAvgY /= stuCols.Count; stuAvgZ /= stuCols.Count;
+
+                return new XYZOffset
                 {
-                    if (stuEl.Category != "\u7d50\u69cb\u67f1") continue;
-                    return new XYZOffset
-                    {
-                        X = stdEl.X - stuEl.X,
-                        Y = stdEl.Y - stuEl.Y,
-                        Z = stdEl.Z - stuEl.Z
-                    };
-                }
+                    X = stdAvgX - stuAvgX,
+                    Y = stdAvgY - stuAvgY,
+                    Z = stdAvgZ - stuAvgZ
+                };
             }
+
+            // 沒有柱的話用任意第一對同類別構件
             foreach (var stdEl in standard.Elements)
             {
                 foreach (var stuEl in student.Elements)
