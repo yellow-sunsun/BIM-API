@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RevitGradingTool
 {
@@ -31,14 +32,18 @@ namespace RevitGradingTool
         public double RawStudentX { get; set; }
         public double RawStudentY { get; set; }
         public double RawStudentZ { get; set; }
+
+        public string CategoryKey { get; set; }    // 類別代碼（例如 OST_PlumbingFixtures）
+        public string FamilyName { get; set; }
+        public string FamilyType { get; set; }
+        public string Group { get; set; }          // 類別分組（結構 / 建築 / 樓梯扶手…），面板篩選用
     }
 
     public class ComparisonEngine
     {
-        private const double TOLERANCE_COLUMN = 50.0;
-        private const double TOLERANCE_BEAM = 100.0;
-        private const double TOLERANCE_FLOOR = 500.0;
-        private const double TOLERANCE_WALL = 500.0;
+        public const string ALL_FLOORS = "\u5168\u90e8\u6a13\u5c64";
+        public const string ALL_GROUPS = "\u5168\u90e8\u985e\u5225";
+        public static readonly string[] Groups = { "\u7d50\u69cb", "\u5efa\u7bc9", "\u6a13\u68af\u6276\u624b", "\u8a2d\u5099\u5bb6\u5177", "\u6a5f\u96fb\u7ba1\u7dda", "\u5176\u4ed6" };
 
         private class XYZOffset
         {
@@ -46,7 +51,7 @@ namespace RevitGradingTool
         }
 
         public List<CompareError> Compare(ModelSnapshot standard, ModelSnapshot student,
-            string selectedFloor = "\u5168\u90e8\u6a13\u5c64",
+            string selectedFloor = ALL_FLOORS,
             Dictionary<string, (double MinZ, double MaxZ)> floorRanges = null)
         {
             var errors = new List<CompareError>();
@@ -69,7 +74,7 @@ namespace RevitGradingTool
 
                 if (foundIdx == -1)
                 {
-                    errors.Add(new CompareError
+                    errors.Add(Info(new CompareError
                     {
                         Type = ErrorType.Missing,
                         Category = stdEl.Category,
@@ -84,90 +89,86 @@ namespace RevitGradingTool
                         RawStudentX = stdEl.X - offset.X,
                         RawStudentY = stdEl.Y - offset.Y,
                         RawStudentZ = stdEl.Z - offset.Z,
-                        Detail = $"\u9019\u88e1\u61c9\u8a72\u6709\u4e00\u500b\u3010{stdEl.Category}\u3011({stdEl.FamilyType})\uff0c\u4f46\u5b78\u751f\u6a21\u578b\u4e2d\u627e\u4e0d\u5230"
-                    });
+                        Detail = $"\u9019\u88e1\u61c9\u8a72\u6709\u4e00\u500b\u3010{stdEl.Category}\u3011({Describe(stdEl)})\uff0c\u4f46\u5b78\u751f\u6a21\u578b\u4e2d\u627e\u4e0d\u5230"
+                    }, stdEl));
+                    continue;
                 }
-                else
+
+                matched.Add(foundIdx);
+                var stuEl = correctedStudent.Elements[foundIdx];
+                var rawEl = filteredStu.Elements[foundIdx];
+
+                var attrErrors = CheckAttributes(stdEl, stuEl);
+                if (attrErrors.Count > 0)
                 {
-                    matched.Add(foundIdx);
-                    var stuEl = correctedStudent.Elements[foundIdx];
-                    var rawEl = filteredStu.Elements[foundIdx];
-
-                    var attrErrors = CheckAttributes(stdEl, stuEl);
-                    if (attrErrors.Count > 0)
+                    errors.Add(Info(new CompareError
                     {
-                        errors.Add(new CompareError
-                        {
-                            Type = ErrorType.WrongAttr,
-                            Category = stdEl.Category,
-                            X = stdEl.X,
-                            Y = stdEl.Y,
-                            Z = stdEl.Z,
-                            StudentX = stuEl.X,
-                            StudentY = stuEl.Y,
-                            StudentZ = stuEl.Z,
-                            Level = stdEl.Level,
-                            StdElementId = stdEl.Id,
-                            StuElementId = rawEl.Id,
-                            RawStudentX = rawEl.X,
-                            RawStudentY = rawEl.Y,
-                            RawStudentZ = rawEl.Z,
-                            Detail = string.Join("\uff1b", attrErrors)
-                        });
-                    }
+                        Type = ErrorType.WrongAttr,
+                        Category = stdEl.Category,
+                        X = stdEl.X,
+                        Y = stdEl.Y,
+                        Z = stdEl.Z,
+                        StudentX = stuEl.X,
+                        StudentY = stuEl.Y,
+                        StudentZ = stuEl.Z,
+                        Level = stdEl.Level,
+                        StdElementId = stdEl.Id,
+                        StuElementId = rawEl.Id,
+                        RawStudentX = rawEl.X,
+                        RawStudentY = rawEl.Y,
+                        RawStudentZ = rawEl.Z,
+                        Detail = string.Join("\uff1b", attrErrors)
+                    }, stdEl));
+                }
 
-                    double rotDiff = Math.Abs(stdEl.Rotation - stuEl.Rotation);
-                    if (rotDiff > 180) rotDiff = 360 - rotDiff;
-                    if (rotDiff > 1.0)
+                if (RotationDiff(stdEl, stuEl) > 1.0)
+                {
+                    errors.Add(Info(new CompareError
                     {
-                        errors.Add(new CompareError
-                        {
-                            Type = ErrorType.WrongRotation,
-                            Category = stdEl.Category,
-                            X = stdEl.X,
-                            Y = stdEl.Y,
-                            Z = stdEl.Z,
-                            StudentX = stuEl.X,
-                            StudentY = stuEl.Y,
-                            StudentZ = stuEl.Z,
-                            Level = stdEl.Level,
-                            StdElementId = stdEl.Id,
-                            StuElementId = rawEl.Id,
-                            RawStudentX = rawEl.X,
-                            RawStudentY = rawEl.Y,
-                            RawStudentZ = rawEl.Z,
-                            Detail = $"\u65cb\u8f49\u89d2\u5ea6\u61c9\u70ba {stdEl.Rotation:F1}\u00b0\uff0c\u5b78\u751f\u7684\u662f {stuEl.Rotation:F1}\u00b0"
-                        });
-                    }
+                        Type = ErrorType.WrongRotation,
+                        Category = stdEl.Category,
+                        X = stdEl.X,
+                        Y = stdEl.Y,
+                        Z = stdEl.Z,
+                        StudentX = stuEl.X,
+                        StudentY = stuEl.Y,
+                        StudentZ = stuEl.Z,
+                        Level = stdEl.Level,
+                        StdElementId = stdEl.Id,
+                        StuElementId = rawEl.Id,
+                        RawStudentX = rawEl.X,
+                        RawStudentY = rawEl.Y,
+                        RawStudentZ = rawEl.Z,
+                        Detail = $"\u65cb\u8f49\u89d2\u5ea6\u61c9\u70ba {stdEl.Rotation:F1}\u00b0\uff0c\u5b78\u751f\u7684\u662f {stuEl.Rotation:F1}\u00b0"
+                    }, stdEl));
                 }
             }
 
             for (int j = 0; j < correctedStudent.Elements.Count; j++)
             {
-                if (!matched.Contains(j))
+                if (matched.Contains(j)) continue;
+                var stuEl = correctedStudent.Elements[j];
+                var rawEl = filteredStu.Elements[j];
+                errors.Add(Info(new CompareError
                 {
-                    var stuEl = correctedStudent.Elements[j];
-                    var rawEl = filteredStu.Elements[j];
-                    errors.Add(new CompareError
-                    {
-                        Type = ErrorType.Extra,
-                        Category = stuEl.Category,
-                        X = stuEl.X,
-                        Y = stuEl.Y,
-                        Z = stuEl.Z,
-                        StudentX = stuEl.X,
-                        StudentY = stuEl.Y,
-                        StudentZ = stuEl.Z,
-                        Level = rawEl.Level,
-                        StuElementId = rawEl.Id,
-                        RawStudentX = rawEl.X,
-                        RawStudentY = rawEl.Y,
-                        RawStudentZ = rawEl.Z,
-                        Detail = $"\u9019\u500b\u3010{stuEl.Category}\u3011({stuEl.FamilyType})\u662f\u591a\u9918\u7684\uff0c\u6a19\u6e96\u6a21\u578b\u6c92\u6709"
-                    });
-                }
+                    Type = ErrorType.Extra,
+                    Category = stuEl.Category,
+                    X = stuEl.X,
+                    Y = stuEl.Y,
+                    Z = stuEl.Z,
+                    StudentX = stuEl.X,
+                    StudentY = stuEl.Y,
+                    StudentZ = stuEl.Z,
+                    Level = rawEl.Level,
+                    StuElementId = rawEl.Id,
+                    RawStudentX = rawEl.X,
+                    RawStudentY = rawEl.Y,
+                    RawStudentZ = rawEl.Z,
+                    Detail = $"\u9019\u500b\u3010{stuEl.Category}\u3011({Describe(stuEl)})\u662f\u591a\u9918\u7684\uff0c\u6a19\u6e96\u6a21\u578b\u6c92\u6709"
+                }, stuEl));
             }
 
+            // 同一個構件「標準有、學生沒有」＋「附近多一個」：其實是放錯位置
             var missingErrors = errors.FindAll(e => e.Type == ErrorType.Missing);
             var extraErrors = errors.FindAll(e => e.Type == ErrorType.Extra);
             var toRemove = new List<CompareError>();
@@ -175,17 +176,25 @@ namespace RevitGradingTool
 
             foreach (var missing in missingErrors)
             {
+                // 原本的 6 個類別：同類別、1m 內就配對（維持原本結果）。
+                // 其他構件（衛浴、設備、樓梯…）：族群與類型都要相同才配對，範圍放寬到 3m，
+                // 避免「少一個馬桶、多一個洗手台」被當成「馬桶放錯位置」
+                bool legacy = IsLegacy(KeyOf(missing));
+                double radius = legacy ? 1000.0 : 3000.0;
+
                 foreach (var extra in extraErrors)
                 {
-                    if (extra.Category != missing.Category) continue;
+                    if (KeyOf(extra) != KeyOf(missing)) continue;
                     if (toRemove.Contains(extra)) continue;
+                    if (!legacy && (extra.FamilyName != missing.FamilyName || extra.FamilyType != missing.FamilyType))
+                        continue;
 
                     double dist = Math.Sqrt(
                         Math.Pow(extra.X - missing.X, 2) +
                         Math.Pow(extra.Y - missing.Y, 2) +
                         Math.Pow(extra.Z - missing.Z, 2));
 
-                    if (dist < 1000.0)
+                    if (dist < radius)
                     {
                         toRemove.Add(missing);
                         toRemove.Add(extra);
@@ -205,7 +214,10 @@ namespace RevitGradingTool
                             RawStudentX = extra.RawStudentX,
                             RawStudentY = extra.RawStudentY,
                             RawStudentZ = extra.RawStudentZ,
-
+                            CategoryKey = missing.CategoryKey,
+                            FamilyName = missing.FamilyName,
+                            FamilyType = missing.FamilyType,
+                            Group = missing.Group,
                             Detail = $"\u3010{missing.Category}\u3011\u4f4d\u7f6e\u504f\u79fb\uff0c\u61c9\u5728 X={missing.X:F0}, Y={missing.Y:F0}\uff0c\u5b78\u751f\u653e\u5728 X={extra.X:F0}, Y={extra.Y:F0}"
                         });
                         break;
@@ -219,11 +231,81 @@ namespace RevitGradingTool
             return errors;
         }
 
+        // 錯誤帶上構件的類別代碼、族群、類型、分組
+        private static CompareError Info(CompareError err, ElementSnapshot el)
+        {
+            err.CategoryKey = el.CategoryKey;
+            err.FamilyName = el.FamilyName;
+            err.FamilyType = el.FamilyType;
+            err.Group = GroupOf(KeyOf(el));
+            return err;
+        }
+
+        // 顯示用：「族群 類型」（系統族群或族群名稱跟類型一樣時只顯示類型）
+        private static string Describe(ElementSnapshot el)
+        {
+            if (string.IsNullOrEmpty(el.FamilyName) || el.FamilyName == el.FamilyType) return el.FamilyType;
+            return $"{el.FamilyName} {el.FamilyType}";
+        }
+
+        // 類別比對用的鍵：有類別代碼用代碼（不受 Revit 介面語言影響），舊的快照沒有代碼就用類別名稱
+        private static string KeyOf(ElementSnapshot el) =>
+            string.IsNullOrEmpty(el.CategoryKey) ? el.Category : el.CategoryKey;
+
+        private static string KeyOf(CompareError err) =>
+            string.IsNullOrEmpty(err.CategoryKey) ? err.Category : err.CategoryKey;
+
+        // 原本就有比對的 6 個類別
+        private static readonly HashSet<string> LegacyKeys = new HashSet<string>
+        {
+            "OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_Doors", "OST_Windows",
+            "\u7d50\u69cb\u67f1", "\u7d50\u69cb\u69cb\u67b6", "\u7246", "\u6a13\u677f", "\u9580", "\u7a97"
+        };
+
+        private static bool IsLegacy(string key) => LegacyKeys.Contains(key ?? "");
+
+        // 類別分組（面板的「構件類別」篩選）
+        public static string GroupOf(string key)
+        {
+            switch (key ?? "")
+            {
+                case "OST_StructuralColumns": case "OST_StructuralFraming": case "OST_StructuralFoundation":
+                case "\u7d50\u69cb\u67f1": case "\u7d50\u69cb\u69cb\u67b6":
+                    return "\u7d50\u69cb";
+                case "OST_Walls": case "OST_Floors": case "OST_Doors": case "OST_Windows": case "OST_Roofs":
+                case "OST_Ceilings": case "OST_Ramps": case "OST_ShaftOpening": case "OST_Toposolid":
+                case "OST_Topography": case "OST_CurtaSystem": case "OST_Columns":
+                case "\u7246": case "\u6a13\u677f": case "\u9580": case "\u7a97":
+                    return "\u5efa\u7bc9";
+                case "OST_Stairs": case "OST_StairsRailing":
+                    return "\u6a13\u68af\u6276\u624b";
+                case "OST_PlumbingFixtures": case "OST_Furniture": case "OST_FurnitureSystems":
+                case "OST_SpecialityEquipment": case "OST_GenericModel": case "OST_Casework":
+                case "OST_LightingFixtures": case "OST_ElectricalFixtures": case "OST_ElectricalEquipment":
+                case "OST_MechanicalEquipment": case "OST_Planting": case "OST_Entourage": case "OST_Parking":
+                    return "\u8a2d\u5099\u5bb6\u5177";
+                case "OST_PipeCurves": case "OST_DuctCurves": case "OST_Conduit": case "OST_CableTray":
+                case "OST_FlexPipeCurves": case "OST_FlexDuctCurves":
+                    return "\u6a5f\u96fb\u7ba1\u7dda";
+                default:
+                    return "\u5176\u4ed6";
+            }
+        }
+
+        // 旋轉角差（0~180°）。線型構件（牆、梁、管線）從哪一端開始畫都一樣，只比到 90°
+        private static double RotationDiff(ElementSnapshot a, ElementSnapshot b)
+        {
+            double d = Math.Abs(a.Rotation - b.Rotation) % 360;
+            if (d > 180) d = 360 - d;
+            if (a.IsLinear && b.IsLinear && d > 90) d = 180 - d;
+            return d;
+        }
+
         private List<ElementSnapshot> FilterByFloor(List<ElementSnapshot> elements,
             string selectedFloor,
             Dictionary<string, (double MinZ, double MaxZ)> floorRanges)
         {
-            if (selectedFloor == "\u5168\u90e8\u6a13\u5c64")
+            if (selectedFloor == ALL_FLOORS)
                 return new List<ElementSnapshot>(elements);
 
             return elements.FindAll(el => el.Level == selectedFloor);
@@ -235,16 +317,20 @@ namespace RevitGradingTool
             // 選「套用後能對上最多構件」的那個。不受建模順序影響，
             // 學生少幾根或多幾根構件也不會把偏移拉走（平均座標會被拉偏）。
             // 優先用結構柱投票；沒有柱的樓層（例如屋頂層）改用梁、牆、樓板
-            var priority = new List<string> { "\u7d50\u69cb\u67f1", "\u7d50\u69cb\u69cb\u67b6", "\u7246", "\u6a13\u677f" };
-            foreach (var el in standard.Elements)
-                if (!priority.Contains(el.Category)) priority.Add(el.Category);
-
-            foreach (var cat in priority)
+            var priority = new List<string>
             {
-                var stdEls = standard.Elements.FindAll(e => e.Category == cat);
-                var stuEls = student.Elements.FindAll(e => e.Category == cat);
+                "OST_StructuralColumns", "\u7d50\u69cb\u67f1", "OST_StructuralFraming", "\u7d50\u69cb\u69cb\u67b6",
+                "OST_Walls", "\u7246", "OST_Floors", "\u6a13\u677f"
+            };
+            foreach (var el in standard.Elements)
+                if (!priority.Contains(KeyOf(el))) priority.Add(KeyOf(el));
+
+            foreach (var key in priority)
+            {
+                var stdEls = standard.Elements.FindAll(e => KeyOf(e) == key);
+                var stuEls = student.Elements.FindAll(e => KeyOf(e) == key);
                 if (stdEls.Count == 0 || stuEls.Count == 0) continue;
-                return VoteOffset(stdEls, stuEls, GetTolerance(cat));
+                return VoteOffset(stdEls, stuEls, GetTolerance(key));
             }
             return new XYZOffset { X = 0, Y = 0, Z = 0 };
         }
@@ -395,40 +481,60 @@ namespace RevitGradingTool
                 {
                     Id = el.Id,
                     Category = el.Category,
+                    CategoryKey = el.CategoryKey,
                     X = el.X + offset.X,
                     Y = el.Y + offset.Y,
                     Z = el.Z + offset.Z,
+                    FamilyName = el.FamilyName,
                     FamilyType = el.FamilyType,
                     Material = el.Material,
                     Width = el.Width,
                     Height = el.Height,
                     Depth = el.Depth,
                     Rotation = el.Rotation,
-                    Level = el.Level
+                    IsLinear = el.IsLinear,
+                    Level = el.Level,
+                    Nums = el.Nums,
+                    Texts = el.Texts
                 });
-
             }
             return corrected;
         }
 
-        private double GetTolerance(string category)
+        // 位置容許誤差（mm）：超過就算「找不到」（再看附近有沒有同一個構件，判斷是不是放錯位置）
+        private static double GetTolerance(string key)
         {
-            if (category == "\u7d50\u69cb\u69cb\u67b6") return TOLERANCE_BEAM;
-            if (category == "\u6a13\u677f") return TOLERANCE_FLOOR;
-            if (category == "\u7246") return TOLERANCE_WALL;
-            return TOLERANCE_COLUMN;
+            switch (key ?? "")
+            {
+                case "OST_StructuralFraming": case "\u7d50\u69cb\u69cb\u67b6":
+                    return 100.0;
+                case "OST_Floors": case "\u6a13\u677f": case "OST_Walls": case "\u7246":
+                case "OST_Roofs": case "OST_Ceilings": case "OST_Toposolid": case "OST_Topography": case "OST_Ramps":
+                    return 500.0;
+                case "OST_Stairs": case "OST_StairsRailing": case "OST_ShaftOpening":
+                    return 300.0;   // 樓梯、扶手用外框中心定位，改級高或梯段寬度時中心會小幅移動
+                case "OST_PlumbingFixtures": case "OST_Furniture": case "OST_FurnitureSystems":
+                case "OST_SpecialityEquipment": case "OST_GenericModel": case "OST_Casework":
+                case "OST_LightingFixtures": case "OST_ElectricalFixtures": case "OST_ElectricalEquipment":
+                case "OST_MechanicalEquipment": case "OST_Planting": case "OST_Entourage": case "OST_Parking":
+                case "OST_PipeCurves": case "OST_DuctCurves": case "OST_Conduit": case "OST_CableTray":
+                    return 100.0;
+                default:
+                    return 50.0;    // 柱、門、窗等
+            }
         }
 
         private int FindClosest(ElementSnapshot target, List<ElementSnapshot> candidates, HashSet<int> used)
         {
             int bestIdx = -1;
             double bestDist = double.MaxValue;
-            double tolerance = GetTolerance(target.Category);
+            string key = KeyOf(target);
+            double tolerance = GetTolerance(key);
 
             for (int i = 0; i < candidates.Count; i++)
             {
                 if (used.Contains(i)) continue;
-                if (candidates[i].Category != target.Category) continue;
+                if (KeyOf(candidates[i]) != key) continue;
 
                 var c = candidates[i];
                 double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
@@ -452,13 +558,56 @@ namespace RevitGradingTool
         {
             var errors = new List<string>();
 
+            if (!string.IsNullOrEmpty(std.FamilyName) && !string.IsNullOrEmpty(stu.FamilyName) &&
+                std.FamilyName != stu.FamilyName)
+                errors.Add($"\u65cf\u7fa4\u61c9\u70ba\u300c{std.FamilyName}\u300d\uff0c\u5b78\u751f\u7528\u7684\u662f\u300c{stu.FamilyName}\u300d");
+
             if (!string.IsNullOrEmpty(std.FamilyType) && std.FamilyType != stu.FamilyType)
                 errors.Add($"\u65cf\u7fa4\u985e\u578b\u61c9\u70ba\u300c{std.FamilyType}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.FamilyType}\u300d");
 
             if (!string.IsNullOrEmpty(std.Material) && std.Material != stu.Material)
                 errors.Add($"\u6750\u8cea\u61c9\u70ba\u300c{std.Material}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.Material}\u300d");
 
+            // 參數（樓梯級高、級深、階數、牆高、扶手高度…）：兩邊都有的才比
+            if (std.Nums != null && stu.Nums != null)
+            {
+                foreach (var kv in std.Nums)
+                {
+                    if (!stu.Nums.TryGetValue(kv.Key, out double v)) continue;
+                    if (Math.Abs(v - kv.Value) > NumTolerance(kv.Key))
+                        errors.Add($"{kv.Key}\u61c9\u70ba {FormatNum(kv.Key, kv.Value)}\uff0c\u5b78\u751f\u7684\u662f {FormatNum(kv.Key, v)}");
+                }
+            }
+            if (std.Texts != null && stu.Texts != null)
+            {
+                foreach (var kv in std.Texts)
+                {
+                    if (!stu.Texts.TryGetValue(kv.Key, out string v)) continue;
+                    if (v != kv.Value)
+                        errors.Add($"{kv.Key}\u61c9\u70ba\u300c{kv.Value}\u300d\uff0c\u5b78\u751f\u7684\u662f\u300c{v}\u300d");
+                }
+            }
+
             return errors;
+        }
+
+        // 個數類（階數、梯段數、平台數）沒有單位、要完全相同
+        private static bool IsCount(string key) => key.EndsWith("\u6578");
+
+        // 參數容許誤差（mm）
+        private static double NumTolerance(string key)
+        {
+            if (IsCount(key)) return 0.5;
+            if (key == "\u7d1a\u9ad8" || key == "\u7d1a\u6df1" || key == "\u6700\u5927\u7d1a\u9ad8" || key == "\u6700\u5c0f\u7d1a\u6df1") return 2.0;
+            if (key.Contains("\u5bec\u5ea6") || key.Contains("\u539a\u5ea6") || key.Contains("\u504f\u79fb")) return 5.0;
+            if (key.Contains("\u9ad8")) return 10.0;   // 牆高、扶手高度
+            return 2.0;
+        }
+
+        private static string FormatNum(string key, double v)
+        {
+            if (IsCount(key)) return $"{v:F0}";
+            return Math.Abs(v - Math.Round(v)) < 0.05 ? $"{v:F0} mm" : $"{v:F1} mm";
         }
     }
 }

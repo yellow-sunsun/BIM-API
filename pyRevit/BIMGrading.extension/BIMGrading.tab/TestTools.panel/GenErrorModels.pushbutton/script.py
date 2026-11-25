@@ -6,11 +6,13 @@
 另存成獨立的 .rvt，並輸出一份「答案表」CSV，記錄每個檔案改了哪個構件、
 預期批改工具應該抓到什麼錯誤。
 
-改動的類別和 RevitGradingTool 匯出的類別一致：
-結構柱、結構構架（梁）、牆、樓板、門、窗。
+改動的類別：結構柱、結構構架（梁）、牆、樓板、門、窗，
+以及衛浴設備、家具、燈具、櫥櫃、欄杆扶手、一般模型、樓梯（級高、級深、階數、平台、扶手…）。
+執行時會另外輸出「類別統計.csv」，列出標準模型有哪些類別、各錯誤種類可用的構件數。
 """
 from __future__ import print_function
 
+import csv
 import io
 import os
 import random
@@ -26,9 +28,15 @@ from Autodesk.Revit.DB import (
     FailureResolutionType, FailureSeverity, FamilyInstance, FilteredElementCollector,
     HostObjAttributes, IFailuresPreprocessor, TransactionStatus,
     Level, Line, LocationCurve, LocationPoint, ModelPathUtils, OpenOptions,
+    SubTransaction,
     DetachFromCentralOption, SaveAsOptions, Transaction, Wall, WallKind,
     WorksharingSaveAsOptions, XYZ,
 )
+from Autodesk.Revit.DB import Plane
+
+from Autodesk.Revit.DB.Architecture import Railing, RailingType, Stairs, StairsLandingType, StairsType
+
+
 from System.Collections.Generic import List
 
 from pyrevit import forms, script
@@ -125,7 +133,8 @@ def level_name(doc, el):
         for bip in (BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
                     BuiltInParameter.FAMILY_LEVEL_PARAM,
                     BuiltInParameter.WALL_BASE_CONSTRAINT,
-                    BuiltInParameter.LEVEL_PARAM):
+                    BuiltInParameter.LEVEL_PARAM,
+                    BuiltInParameter.STAIRS_BASE_LEVEL_PARAM):
             p = el.get_Parameter(bip)
             if p is not None and p.HasValue:
                 lid = p.AsElementId()
@@ -198,23 +207,167 @@ def is_hosted_in_wall(el):
     return isinstance(el, FamilyInstance) and isinstance(el.Host, Wall)
 
 
+def family_text(el):
+    """族群名稱 + 類型名稱（小寫），用來辨認馬桶、洗手台等。"""
+    try:
+        sym = el.Symbol
+        return (u"%s %s" % (sym.Family.Name, elem_name(sym))).lower()
+    except Exception:
+        return u""
+
+
+def name_matches(*words):
+    def ok(e):
+        t = family_text(e)
+        return isinstance(e, FamilyInstance) and any(w in t for w in words)
+    return ok
+
+
+def is_free_instance(e):
+    """不依附在牆 / 樓板上的族群（可以自由旋轉、移動）。"""
+    return isinstance(e, FamilyInstance) and (e.Host is None or isinstance(e.Host, Level))
+
+
+def is_family_instance(e):
+    """一般的可載入族群；排除內建族群，以及巢狀在別的族群裡的子元件（不能單獨刪除或移動）。"""
+    return (isinstance(e, FamilyInstance) and not is_in_place(e)
+            and getattr(e, "SuperComponent", None) is None)
+
+
+def is_stairs(e):
+    return isinstance(e, Stairs)
+
+
+def stair_railings(doc, st):
+    """樓梯的扶手。有些模型的 GetAssociatedRailings() 是空的（扶手是另外畫的），
+    所以再加上「主體是這座樓梯」以及「位置和樓梯重疊」的欄杆。"""
+    found = {}
+    for i in st.GetAssociatedRailings():
+        found[eid(doc.GetElement(i))] = doc.GetElement(i)
+    bb = st.get_BoundingBox(None)
+    pad = 300 * MM
+    for r in FilteredElementCollector(doc).OfClass(Railing):
+        if r.GroupId != ElementId.InvalidElementId or r.Pinned:
+            continue
+        if r.HostId == st.Id:
+            found[eid(r)] = r
+            continue
+        rb = r.get_BoundingBox(None)
+        if bb is not None and rb is not None and r.HostId == ElementId.InvalidElementId and \
+                rb.Min.X < bb.Max.X + pad and rb.Max.X > bb.Min.X - pad and \
+                rb.Min.Y < bb.Max.Y + pad and rb.Max.Y > bb.Min.Y - pad and \
+                rb.Min.Z < bb.Max.Z + pad and rb.Max.Z > bb.Min.Z - pad:
+            found[eid(r)] = r
+    return [found[k] for k in sorted(found)]
+
+
+def is_free_railing(e):
+    """不在樓梯上的欄杆（陽台、走廊欄杆等）。"""
+    return isinstance(e, Railing) and e.HostId == ElementId.InvalidElementId
+
+
+CAT_PLUMB = BuiltInCategory.OST_PlumbingFixtures
+CAT_FURN = BuiltInCategory.OST_Furniture
+CAT_LIGHT = BuiltInCategory.OST_LightingFixtures
+CAT_CASE = BuiltInCategory.OST_Casework
+CAT_RAIL = BuiltInCategory.OST_StairsRailing
+CAT_STAIRS = BuiltInCategory.OST_Stairs
+CAT_GENERIC = BuiltInCategory.OST_GenericModel
+CAT_SPECIAL = BuiltInCategory.OST_SpecialityEquipment
+
+TOILET_WORDS = (u"馬桶", u"便器", u"坐便", u"toilet", u"wc", u"water closet")
+SINK_WORDS = (u"洗手", u"洗臉", u"面盆", u"臉盆", u"sink", u"lavatory", u"basin")
+TUB_WORDS = (u"浴缸", u"bathtub", u"tub")
+
+
+def is_toilet(e):
+    """馬桶：名稱有馬桶相關字、而且不是洗手台（避免「馬桶＋洗手台組合」被當成兩種）。"""
+    return name_matches(*TOILET_WORDS)(e) and not name_matches(*SINK_WORDS)(e)
+
+
+def is_sink(e):
+    return name_matches(*SINK_WORDS)(e) and not name_matches(*TOILET_WORDS)(e)
+
+# 種類 → (類別清單, 篩選條件, 找不到時改用的種類)
 CANDIDATES = {
-    "col": (CAT_COL, is_vertical_column),
-    "beam": (CAT_BEAM, is_line_beam),
-    "wall": (CAT_WALL, is_basic_line_wall),
-    "wall_free": (CAT_WALL, lambda e: is_basic_line_wall(e) and has_no_inserts(e)),
-    "floor": (CAT_FLOOR, lambda e: True),
-    "door": (CAT_DOOR, is_hosted_in_wall),
-    "win": (CAT_WIN, is_hosted_in_wall),
+    "col": ([CAT_COL], is_vertical_column, None),
+    "beam": ([CAT_BEAM], is_line_beam, None),
+    "wall": ([CAT_WALL], is_basic_line_wall, None),
+    "wall_free": ([CAT_WALL], lambda e: is_basic_line_wall(e) and has_no_inserts(e), None),
+    "floor": ([CAT_FLOOR], lambda e: True, None),
+    "door": ([CAT_DOOR], is_hosted_in_wall, None),
+    "win": ([CAT_WIN], is_hosted_in_wall, None),
+    # 衛浴、家具等
+    "plumb": ([CAT_PLUMB], is_family_instance, None),
+    "plumb_free": ([CAT_PLUMB], lambda e: is_family_instance(e) and is_free_instance(e), None),
+    "toilet": ([CAT_PLUMB], lambda e: is_toilet(e), "plumb"),
+    "toilet_free": ([CAT_PLUMB], lambda e: is_toilet(e) and is_free_instance(e), "plumb_free"),
+    "sink": ([CAT_PLUMB], lambda e: is_sink(e), "plumb"),
+    "tub": ([CAT_PLUMB], name_matches(*TUB_WORDS), "plumb"),
+    # 模型沒有家具時，改用特製設備 / 一般模型（同樣是獨立擺放的元件）
+    "furniture": ([CAT_FURN], lambda e: is_family_instance(e) and is_free_instance(e), "equip_free"),
+    "equip_free": ([CAT_SPECIAL, CAT_GENERIC], lambda e: is_family_instance(e) and is_free_instance(e), None),
+    # 模型沒有燈具時，改用機電構件（電氣、機械設備、管線、風管）
+    "light": ([CAT_LIGHT], is_family_instance, "mep"),
+    "mep": ([BuiltInCategory.OST_ElectricalFixtures, BuiltInCategory.OST_ElectricalEquipment,
+             BuiltInCategory.OST_MechanicalEquipment, BuiltInCategory.OST_PipeCurves,
+             BuiltInCategory.OST_DuctCurves], lambda e: getattr(e, "SuperComponent", None) is None, None),
+    "casework": ([CAT_CASE], is_family_instance, "casework_parent"),
+    # 櫥櫃都是巢狀在別的族群裡時（例如整組廚具）：刪掉包含它的整個族群
+    "casework_parent": ([CAT_CASE], lambda e: False, None),
+    "generic": ([CAT_GENERIC, CAT_SPECIAL], lambda e: isinstance(e, FamilyInstance), None),
+    "railing_free": ([CAT_RAIL], is_free_railing, "railing"),
+    "railing": ([CAT_RAIL], lambda e: isinstance(e, Railing), None),
+    # 樓梯
+    "stairs": ([CAT_STAIRS], is_stairs, None),
+    "stairs_runs": ([CAT_STAIRS], lambda e: is_stairs(e) and e.GetStairsRuns().Count > 0, None),
+    "stairs_landing": ([CAT_STAIRS], lambda e: is_stairs(e) and e.GetStairsLandings().Count > 0, None),
+    "stairs_rail": ([CAT_STAIRS], lambda e: is_stairs(e) and len(stair_railings(e.Document, e)) > 0, None),
+    "stairs_rail2": ([CAT_STAIRS], lambda e: is_stairs(e) and len(stair_railings(e.Document, e)) >= 2, "stairs_rail"),
+    "stair_railing": ([CAT_RAIL], lambda e: isinstance(e, Railing) and e.HostId != ElementId.InvalidElementId, "railing"),
 }
 
 CAT_LABEL = {"col": u"結構柱", "beam": u"結構構架", "wall": u"牆", "wall_free": u"牆",
-             "floor": u"樓板", "door": u"門", "win": u"窗"}
+             "floor": u"樓板", "door": u"門", "win": u"窗",
+             "plumb": u"衛浴設備", "plumb_free": u"衛浴設備", "toilet": u"衛浴設備(馬桶)",
+             "toilet_free": u"衛浴設備(馬桶)", "sink": u"衛浴設備(洗手台)", "tub": u"衛浴設備(浴缸)",
+             "furniture": u"家具", "equip_free": u"特製設備/一般模型", "light": u"照明設備", "casework": u"櫥櫃",
+             "casework_parent": u"含櫥櫃的整組族群", "mep": u"機電構件",
+             "generic": u"一般模型/專用設備", "railing_free": u"欄杆扶手", "railing": u"欄杆扶手",
+             "stair_railing": u"欄杆扶手(樓梯)",
+             "stairs": u"樓梯", "stairs_runs": u"樓梯", "stairs_landing": u"樓梯",
+             "stairs_rail": u"樓梯", "stairs_rail2": u"樓梯"}
+
+
+def top_component(e):
+    while getattr(e, "SuperComponent", None) is not None:
+        e = e.SuperComponent
+    return e
+
+
+def candidates(doc, kind):
+    if kind == "casework_parent":
+        found = {}
+        for e in FilteredElementCollector(doc).OfCategory(CAT_CASE).WhereElementIsNotElementType():
+            if getattr(e, "SuperComponent", None) is None:
+                continue
+            p = top_component(e)
+            if p.GroupId == ElementId.InvalidElementId and not p.Pinned:
+                found[eid(p)] = p
+        return [found[k] for k in sorted(found)]
+    cats, ok, fallback = CANDIDATES[kind]
+
+    els = []
+    for cat in cats:
+        els.extend(e for e in collect(doc, cat) if ok(e))
+    if not els and fallback:
+        return candidates(doc, fallback)
+    els.sort(key=eid)
+    return els
 
 
 def pick(doc, rng, kind):
-    cat, ok = CANDIDATES[kind]
-    els = [e for e in collect(doc, cat) if ok(e)]
+    els = candidates(doc, kind)
     if not els:
         raise SkipVariant(u"模型中沒有可用的%s" % CAT_LABEL[kind])
     return rng.choice(els)
@@ -253,8 +406,10 @@ def record(doc, kind, el, detail, expect):
 def op_delete(kind):
     def run(doc, rng):
         el = pick(doc, rng, kind)
-        r = record(doc, kind, el, u"刪除（類型 %s）" % type_name(doc, el), u"缺少 1")
+        r = record(doc, kind, el, u"刪除（%s / 類型 %s）" % (
+            el.Category.Name if el.Category is not None else u"", type_name(doc, el)), u"缺少 1")
         doc.Delete(el.Id)
+
         return [r]
     return run
 
@@ -292,7 +447,15 @@ def other_types(doc, el):
     """可以換的其他類型（名稱不同）。先用 GetValidTypes，沒有的話找同類別、同種類的類型。"""
     cur_type = doc.GetElement(el.GetTypeId())
     cur_name = elem_name(cur_type)
+    # 族群元件優先換成「同一個族群」的其他類型（例如洗手台換尺寸），不要換成別的東西（洗手台變馬桶）
+    if isinstance(el, FamilyInstance) and not is_in_place(el):
+        same = [i for i in el.Symbol.Family.GetFamilySymbolIds()
+                if i != cur_type.Id and elem_name(doc.GetElement(i)) != cur_name]
+        if same:
+            same.sort(key=lambda i: elem_name(doc.GetElement(i)))
+            return same
     ids = [i for i in el.GetValidTypes() if i != cur_type.Id]
+
     if not ids and cur_type.Category is not None:
         is_found = getattr(cur_type, "IsFoundationSlab", None)
         ids = [t.Id for t in FilteredElementCollector(doc).OfClass(cur_type.GetType())
@@ -403,8 +566,7 @@ def op_sill(kind, delta_mm):
 
 
 def op_flip_door(doc, rng):
-    cat, ok = CANDIDATES["door"]
-    els = [e for e in collect(doc, cat) if ok(e) and e.CanFlipFacing]
+    els = [e for e in candidates(doc, "door") if e.CanFlipFacing]
     if not els:
         raise SkipVariant(u"沒有可以翻轉的門")
     el = rng.choice(els)
@@ -597,7 +759,334 @@ def op_shift_all(dx_mm, dy_mm):
     return run
 
 
+# ---------------------------------------------------------------------------
+# 衛浴、家具、燈具等一般構件
+# ---------------------------------------------------------------------------
+
+def center_xyz(el):
+    x, y, z = location_mm(el)
+    return XYZ(x * MM, y * MM, z * MM)
+
+
+def move_dir(el):
+    """依附在牆上的沿牆移動（才不會脫離主體），其他沿 X 軸。"""
+    return along_host_dir(el) if is_hosted_in_wall(el) else XYZ(1, 0, 0)
+
+
+def op_move_auto(kind, mm):
+    def run(doc, rng):
+        el = pick(doc, rng, kind)
+        r = record(doc, kind, el, u"平移 %d mm（類型 %s）" % (mm, type_name(doc, el)), u"位置偏移 1")
+        ElementTransformUtils.MoveElement(doc, el.Id, move_dir(el) * (mm * MM))
+        return [r]
+    return run
+
+
+def op_rotate(kind, deg):
+    def run(doc, rng):
+        el = pick(doc, rng, kind)
+        p = center_xyz(el)
+        axis = Line.CreateBound(p, p + XYZ.BasisZ)
+        r = record(doc, kind, el, u"原地旋轉 %d 度（類型 %s）" % (deg, type_name(doc, el)), u"旋轉錯誤 1")
+        ElementTransformUtils.RotateElement(doc, el.Id, axis, deg * 3.141592653589793 / 180.0)
+        return [r]
+    return run
+
+
+def nearest(els, target, exclude_ids):
+    """離 target 最近的構件（同一間浴室裡的其他設備）。"""
+    t = center_xyz(target)
+    best, best_d = None, None
+    for e in els:
+        if e.Id in exclude_ids:
+            continue
+        d = center_xyz(e).DistanceTo(t)
+        if best is None or d < best_d:
+            best, best_d = e, d
+    return best
+
+
+def op_bathroom_combo(doc, rng):
+    """同一間浴室錯好幾個：少馬桶、洗手台移位、多一個浴缸（或其他衛浴設備）。"""
+    toilet = pick(doc, rng, "toilet")
+    used = [toilet.Id]
+    sink = nearest(candidates(doc, "sink"), toilet, used)
+    if sink is None:
+        raise SkipVariant(u"找不到馬桶附近的洗手台")
+    used.append(sink.Id)
+    extra = nearest(candidates(doc, "tub"), toilet, used) or nearest(candidates(doc, "plumb"), toilet, used)
+    if extra is None:
+        raise SkipVariant(u"找不到第三個衛浴設備可以複製")
+
+    recs = [record(doc, "toilet", toilet, u"刪除（類型 %s）" % type_name(doc, toilet), u"缺少 1"),
+            record(doc, "sink", sink, u"平移 500 mm（類型 %s）" % type_name(doc, sink), u"位置偏移 1"),
+            record(doc, "plumb", extra, u"複製一個到 (+1200, 0) mm（類型 %s）" % type_name(doc, extra), u"多餘 1")]
+    ElementTransformUtils.MoveElement(doc, sink.Id, move_dir(sink) * (500 * MM))
+    ElementTransformUtils.CopyElement(doc, extra.Id, XYZ(1200 * MM, 0, 0))
+    doc.Delete(toilet.Id)
+    return recs
+
+
+# ---------------------------------------------------------------------------
+# 樓梯與扶手
+# ---------------------------------------------------------------------------
+
+def stair_summary(st):
+    return u"級高 %.1f / 級深 %.0f / 實際階數 %d / 所需階數 %d" % (
+        st.ActualRiserHeight / MM, st.ActualTreadDepth / MM, st.ActualRisersNumber, st.DesiredRisersNumber)
+
+
+def first_run(doc, st):
+    runs = list(st.GetStairsRuns())
+    if not runs:
+        raise SkipVariant(u"樓梯沒有梯段")
+    runs.sort(key=lambda i: i.Value if hasattr(i, "Value") else i.IntegerValue)
+    return doc.GetElement(runs[0])
+
+
+def op_stair(kind, expect, change):
+    """通用樓梯修改：change(doc, st, rng) 做修改並回傳說明；答案表會附上修改前後的級高 / 級深 / 階數。"""
+    def run(doc, rng):
+        st = pick(doc, rng, kind)
+        before = stair_summary(st)
+        r = record(doc, "stairs", st, u"", expect)
+        detail = change(doc, st, rng)
+        doc.Regenerate()
+        r["detail"] = u"%s（修改前：%s；修改後：%s）" % (detail, before, stair_summary(st))
+        return [r]
+    return run
+
+
+def op_delete_stairs(doc, rng):
+    st = pick(doc, rng, "stairs")
+    n = st.GetAssociatedRailings().Count
+    r = record(doc, "stairs", st, u"刪除整座樓梯（類型 %s，%s，連同依附的扶手 %d 個）" % (
+        type_name(doc, st), stair_summary(st), n),
+        u"缺少樓梯 1" + (u"＋缺少扶手 %d" % n if n else u""))
+    doc.Delete(st.Id)
+    return [r]
+
+
+def ch_mirror(doc, st, rng):
+    """以樓梯中心、垂直於第一段梯段方向的平面鏡射：上樓方向反過來，樓梯仍在原處。"""
+    run = first_run(doc, st)
+    d = None
+    for c in run.GetStairsPath():
+        d = c.GetEndPoint(1) - c.GetEndPoint(0)
+        break
+    if d is None:
+        raise SkipVariant(u"讀不到梯段路徑")
+    d = XYZ(d.X, d.Y, 0).Normalize()
+    if not ElementTransformUtils.CanMirrorElement(doc, st.Id):
+        raise SkipVariant(u"這座樓梯不能鏡射")
+    plane = Plane.CreateByNormalAndOrigin(d, center_xyz(st))
+    ElementTransformUtils.MirrorElements(doc, List[ElementId]([st.Id]), plane, False)
+    return u"上樓方向畫反（以樓梯中心鏡射）"
+
+
+def ch_top_level(doc, st, rng):
+    p = st.get_Parameter(BuiltInParameter.STAIRS_TOP_LEVEL_PARAM)
+    base = st.get_Parameter(BuiltInParameter.STAIRS_BASE_LEVEL_PARAM).AsElementId()
+    levels = sorted(FilteredElementCollector(doc).OfClass(Level), key=lambda l: l.ProjectElevation)
+    ids = [l.Id for l in levels]
+    cur = p.AsElementId()
+    if cur not in ids:
+        raise SkipVariant(u"樓梯頂部沒有連到樓層")
+    i = ids.index(cur)
+    base_elev = doc.GetElement(base).ProjectElevation
+    # 多跨一層（接到再上一層）；已經是最高層就改成少一層
+    if i + 1 < len(levels):
+        new = levels[i + 1]
+    elif i - 1 >= 0 and levels[i - 1].ProjectElevation > base_elev:
+        new = levels[i - 1]
+    else:
+        raise SkipVariant(u"沒有可以改的頂部樓層")
+    old_name = elem_name(doc.GetElement(cur))
+    p.Set(new.Id)
+    return u"頂部樓層「%s」接成「%s」" % (old_name, elem_name(new))
+
+
+def ch_param_mm(bip, delta_mm, label):
+    def change(doc, st, rng):
+        set_param_mm(st, bip, delta_mm)
+        return u"%s %+d mm" % (label, delta_mm)
+    return change
+
+
+def ch_desired_risers(delta, label):
+    def change(doc, st, rng):
+        n = st.DesiredRisersNumber
+        if n + delta < 3:
+            raise SkipVariant(u"階數太少")
+        st.DesiredRisersNumber = n + delta
+        return u"%s：所需豎板數 %d → %d" % (label, n, n + delta)
+    return change
+
+
+def ch_tread(doc, st, rng):
+    old = st.ActualTreadDepth
+    for delta in (-20, 20):
+        try:
+            st.ActualTreadDepth = old + delta * MM
+            return u"級深 %.0f → %.0f mm" % (old / MM, (old + delta * MM) / MM)
+        except Exception:
+            continue
+    raise SkipVariant(u"級深無法修改（受樓梯類型的最小級深限制）")
+
+
+def ch_ends_with_riser(doc, st, rng):
+    run = first_run(doc, st)
+    old = run.EndsWithRiser
+    run.EndsWithRiser = not old
+    return u"第一段梯段「以豎板結束」%s → %s" % (old, not old)
+
+
+def ch_run_width(doc, st, rng):
+    run = first_run(doc, st)
+    old = run.ActualRunWidth
+    new = max(600 * MM, old - 300 * MM)
+    if abs(new - old) < 1 * MM:
+        raise SkipVariant(u"梯段已經很窄")
+    run.ActualRunWidth = new
+    return u"第一段梯段寬度 %.0f → %.0f mm" % (old / MM, new / MM)
+
+
+def stairs_using(doc, pred):
+    return [s for s in FilteredElementCollector(doc).OfClass(Stairs) if pred(doc.GetElement(s.GetTypeId()))]
+
+
+def op_landing_type_thickness(delta_mm):
+    """直接改平台類型的厚度、名稱不變（學生常見：改了類型內容卻沒另存新類型）。"""
+    def run(doc, rng):
+        st = pick(doc, rng, "stairs_landing")
+        stype = doc.GetElement(st.GetTypeId())
+        lt = doc.GetElement(stype.LandingType) if isinstance(stype, StairsType) else None
+        if not isinstance(lt, StairsLandingType):
+            raise SkipVariant(u"讀不到平台類型")
+        affected = stairs_using(doc, lambda t: isinstance(t, StairsType) and t.LandingType == lt.Id)
+        old = lt.Thickness
+        lt.Thickness = old + delta_mm * MM
+        r = record(doc, "stairs", st, u"平台類型「%s」厚度 %.0f → %.0f mm（名稱不變）" % (
+            elem_name(lt), old / MM, (old + delta_mm * MM) / MM),
+            u"屬性錯誤 %d（所有使用此平台類型的樓梯）" % len(affected))
+        return [r]
+    return run
+
+
+def op_stair_type_max_riser(delta_mm):
+    def run(doc, rng):
+        st = pick(doc, rng, "stairs")
+        stype = doc.GetElement(st.GetTypeId())
+        if not isinstance(stype, StairsType):
+            raise SkipVariant(u"讀不到樓梯類型")
+        affected = stairs_using(doc, lambda t: t is not None and t.Id == stype.Id)
+        old = stype.MaxRiserHeight
+        stype.MaxRiserHeight = old + delta_mm * MM
+        r = record(doc, "stairs", st, u"樓梯類型「%s」最大級高 %.0f → %.0f mm（名稱不變）" % (
+            elem_name(stype), old / MM, (old + delta_mm * MM) / MM),
+            u"屬性錯誤 %d（所有使用此樓梯類型的樓梯）" % len(affected))
+        return [r]
+    return run
+
+
+def op_delete_stair_railings(one_side):
+    def run(doc, rng):
+        st = pick(doc, rng, "stairs_rail2" if one_side else "stairs_rail")
+        rails = sorted(stair_railings(doc, st), key=eid)
+        targets = [rng.choice(rails)] if one_side else rails
+        recs = [record(doc, "stair_railing", r,
+                       (u"只留單側扶手：刪除其中一側（類型 %s）" if one_side else u"整座樓梯的扶手都刪除（類型 %s）")
+                       % type_name(doc, r), u"缺少 1") for r in targets]
+        doc.Delete(List[ElementId]([r.Id for r in targets]))
+        return recs
+    return run
+
+
+def railing_height(rt):
+    return rt.TopRailHeight
+
+
+def op_railing_height(delta_mm, keep_name):
+    """扶手高度錯：keep_name=False 複製新類型（名稱不同）；True 直接改原類型（名稱不變）。"""
+    def run(doc, rng):
+        r = pick(doc, rng, "stair_railing")
+        rt = doc.GetElement(r.GetTypeId())
+        if not isinstance(rt, RailingType):
+            raise SkipVariant(u"讀不到扶手類型")
+        old = railing_height(rt)
+        new = old + delta_mm * MM
+        if keep_name:
+            affected = [x for x in FilteredElementCollector(doc).OfClass(Railing) if x.GetTypeId() == rt.Id]
+            rt.TopRailHeight = new
+            return [record(doc, "stair_railing", r, u"扶手類型「%s」高度 %.0f → %.0f mm（名稱不變）" % (
+                elem_name(rt), old / MM, new / MM),
+                u"屬性錯誤 %d（所有使用此扶手類型的扶手）" % len(affected))]
+        existing = set(elem_name(t) for t in FilteredElementCollector(doc).OfClass(RailingType))
+        name = u"%s %.0fmm" % (elem_name(rt), new / MM)
+        while name in existing:
+            name += u"_"
+        nt = rt.Duplicate(name)
+        nt.TopRailHeight = new
+        rec = record(doc, "stair_railing", r, u"扶手高度 %.0f → %.0f mm（換成新類型「%s」）" % (
+            old / MM, new / MM, name), u"屬性錯誤 1")
+        r.ChangeTypeId(nt.Id)
+        return [rec]
+    return run
+
+
+def op_stair_combo(doc, rng):
+    """同一座樓梯錯好幾個：級高錯、只留單側扶手、梯段寬度不足。"""
+    st = pick(doc, rng, "stairs_rail2")
+    before = stair_summary(st)
+    rails = sorted(stair_railings(doc, st), key=eid)
+    victim = rng.choice(rails)
+    rail_rec = record(doc, "stair_railing", victim, u"只留單側扶手（類型 %s）" % type_name(doc, victim), u"缺少 1")
+    st_rec = record(doc, "stairs", st, u"", u"屬性錯誤 1（級高、梯段寬度）")
+    d1 = ch_desired_risers(-2, u"級高錯")(doc, st, rng)
+    d2 = ch_run_width(doc, st, rng)
+    doc.Delete(victim.Id)
+    doc.Regenerate()
+    st_rec["detail"] = u"%s；%s（修改前：%s；修改後：%s）" % (d1, d2, before, stair_summary(st))
+    return [st_rec, rail_rec]
+
+
+# 隨機綜合錯誤不抽這些：整棟偏移、改類型內容（影響很多構件，錯誤數不好預期）、其他綜合題、
+# 批改工具可能抓不到的（牆高、門開向）、對照組
+RANDOM_EXCLUDE = (u"00_", u"15_", u"21_", u"26_", u"27_", u"39_", u"54_", u"55_", u"60_",
+                  u"61_", u"62_", u"63_", u"64_")
+
+
+def op_random_combo(count):
+    """從結構與元件的錯誤種類中隨機抽 count 個，套用在同一個模型上。
+    每個錯誤包在 SubTransaction 裡：做不出來的只回復那一個，再抽下一個，直到湊滿 count 個。"""
+    def run(doc, rng):
+        pool = [(n, op) for n, op in VARIANTS if not n.startswith(RANDOM_EXCLUDE)]
+        rng.shuffle(pool)
+        recs, done = [], 0
+        for name, op in pool:
+            if done >= count:
+                break
+            sub = SubTransaction(doc)
+            sub.Start()
+            try:
+                got = op(doc, rng)
+                doc.Regenerate()
+                sub.Commit()
+            except Exception:
+                sub.RollBack()
+                continue
+            for r in got:
+                r["detail"] = u"[%s] %s" % (name, r["detail"])
+            recs.extend(got)
+            done += 1
+        if done < count:
+            raise SkipVariant(u"只湊得出 %d 個錯誤（要 %d 個）" % (done, count))
+        return recs
+    return run
+
+
 def op_combo(*ops):
+
     def run(doc, rng):
         recs = []
         for op in ops:
@@ -642,6 +1131,58 @@ VARIANTS = [
     (u"26_整棟模型偏移", op_shift_all(5000, 3000)),
     (u"27_錯一堆", op_combo(op_delete("col"), op_change_type("beam"),
                           op_delete("win"), op_move("wall_free", 600, "perp"))),
+
+    # ---- 衛浴、家具、燈具等 ----
+    (u"28_少一個馬桶", op_delete("toilet")),
+    (u"29_馬桶位置放錯", op_move_auto("toilet", 800)),
+    (u"30_馬桶方向錯", op_rotate("toilet_free", 180)),
+    (u"31_洗手台類型錯", op_change_type("sink")),
+    (u"32_少一件家具或設備", op_delete("furniture")),
+    (u"33_多一件家具或設備", op_copy("furniture", 1500, 0)),
+    (u"34_家具或設備位置偏移500", op_move_auto("furniture", 500)),
+    (u"35_馬桶重複放置", op_copy("toilet", 0, 0)),
+
+    (u"36_少一個櫥櫃", op_delete("casework")),
+    (u"37_少一段欄杆", op_delete("railing_free")),
+    (u"38_少一個一般模型或設備", op_delete("generic")),
+    (u"39_浴室錯一堆", op_bathroom_combo),
+
+    # ---- 樓梯：整座 ----
+    (u"40_少一座樓梯", op_delete_stairs),
+    (u"41_樓梯位置偏移500", op_move("stairs", 500, "x", expect=u"位置偏移 1（依附的扶手也跟著偏移）")),
+    (u"42_樓梯上樓方向相反", op_stair("stairs_runs", u"方向錯誤 1", ch_mirror)),
+    (u"43_樓梯類型錯", op_change_type("stairs")),
+    (u"44_樓梯重複建立", op_copy("stairs", 0, 0)),
+    # ---- 樓梯：高度 / 樓層 ----
+    (u"45_樓梯頂部樓層接錯", op_stair("stairs", u"屬性錯誤 1（頂部樓層、階數或級高）", ch_top_level)),
+    (u"46_樓梯底部偏移錯", op_stair("stairs", u"屬性錯誤 1（底部偏移）",
+                                ch_param_mm(BuiltInParameter.STAIRS_BASE_OFFSET, 150, u"底部偏移"))),
+    (u"47_樓梯沒到頂", op_stair("stairs", u"屬性錯誤 1（頂部偏移、級高）",
+                              ch_param_mm(BuiltInParameter.STAIRS_TOP_OFFSET, -300, u"頂部偏移"))),
+    # ---- 樓梯：踏階 ----
+    (u"48_級高錯", op_stair("stairs", u"屬性錯誤 1（級高、所需階數）", ch_desired_risers(-2, u"級高變大"))),
+    (u"49_階數錯_樓梯未完成", op_stair("stairs", u"屬性錯誤 1（所需階數與實際階數不符）",
+                                    ch_desired_risers(2, u"階數不足"))),
+    (u"50_級深錯", op_stair("stairs", u"屬性錯誤 1（級深）", ch_tread)),
+    (u"51_梯段豎板起訖設定錯", op_stair("stairs_runs", u"屬性錯誤 1（以豎板結束）", ch_ends_with_riser)),
+    # ---- 樓梯：梯段 / 平台 ----
+    (u"52_梯段寬度不足", op_stair("stairs_runs", u"屬性錯誤 1（梯段寬度）", ch_run_width)),
+    (u"53_樓梯方向轉錯90度", op_rotate("stairs", 90)),
+    (u"54_平台厚度錯_類型改了沒改名", op_landing_type_thickness(50)),
+    (u"55_最大級高錯_類型改了沒改名", op_stair_type_max_riser(20)),
+    # ---- 樓梯：扶手 ----
+    (u"56_樓梯少扶手", op_delete_stair_railings(one_side=False)),
+    (u"57_樓梯只有單側扶手", op_delete_stair_railings(one_side=True)),
+    (u"58_扶手類型錯", op_change_type("stair_railing")),
+    (u"59_扶手高度錯", op_railing_height(-200, keep_name=False)),
+    (u"60_扶手高度錯_類型改了沒改名", op_railing_height(-200, keep_name=True)),
+    # ---- 樓梯：綜合 ----
+    (u"61_樓梯錯一堆", op_stair_combo),
+
+    # ---- 結構＋元件的隨機綜合錯誤 ----
+    (u"62_綜合錯一堆_隨機10個", op_random_combo(10)),
+    (u"63_綜合錯一堆A_隨機8個", op_random_combo(8)),
+    (u"64_綜合錯一堆B_隨機12個", op_random_combo(12)),
 ]
 
 
@@ -751,6 +1292,46 @@ def csv_cell(v):
     return s
 
 
+def read_manifest(path):
+    """讀取既有答案表（沒有的話回傳空清單），去掉標題列。"""
+    if not os.path.exists(path):
+        return []
+    try:
+        with io.open(path, "r", encoding="utf-8-sig") as f:
+            data = list(csv.reader(f))
+        return [[c.lstrip(u"﻿") for c in r] for r in data[1:] if len(r) >= 10]
+    except Exception:
+        return []
+
+
+def write_category_stats(open_src, workshared, path):
+    """統計標準模型有哪些模型類別、各幾個，以及各錯誤種類可用的構件數。
+    用來確認這個模型能測到哪些錯誤（沒有的類別，對應的變體會被跳過）。"""
+    doc = open_variant(open_src, workshared)
+    try:
+        counts = {}
+        for e in FilteredElementCollector(doc).WhereElementIsNotElementType():
+            cat = e.Category
+            if cat is None or cat.CategoryType != CategoryType.Model or e.ViewSpecific:
+                continue
+            counts[cat.Name] = counts.get(cat.Name, 0) + 1
+        kinds = [(k, CAT_LABEL[k], len(candidates(doc, k))) for k in sorted(CANDIDATES)]
+    finally:
+        doc.Close(False)
+
+    with io.open(path, "w", encoding="utf-8-sig") as f:
+        f.write(u"模型類別,數量\n")
+        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            f.write(u"%s,%d\n" % (csv_cell(name), n))
+        f.write(u"\n錯誤種類代號,說明,可用構件數\n")
+        for k, label, n in kinds:
+            f.write(u"%s,%s,%d\n" % (k, csv_cell(label), n))
+
+    output.print_md(u"### 標準模型類別統計")
+    output.print_md(u"、".join(u"%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
+    output.print_md(u"可用構件數：" + u"、".join(u"%s %d" % (label, n) for _, label, n in kinds))
+
+
 def write_manifest(path, rows):
     header = [u"檔名", u"錯誤說明", u"類別", u"元件ID", u"樓層", u"原X(mm)", u"原Y(mm)", u"原Z(mm)",
               u"改動細節", u"預期批改結果"]
@@ -799,16 +1380,23 @@ def main():
         open_src = tmp_src
 
     try:
+        write_category_stats(open_src, workshared, os.path.join(out_dir, u"%s 類別統計.csv" % base))
         generate(todo, open_src, out_dir, base, workshared, rows, skipped)
     finally:
         if tmp_src is not None:
             remove_with_backups(tmp_src)
 
+    made = len(set(r[0] for r in rows))
+
+    # 答案表：保留上次產生、這次沒重做的變體，只更新這次產生的
     manifest = os.path.join(out_dir, u"%s 錯誤模型答案表.csv" % base)
+    redone = set(n for n, _ in todo)
+    rows = [r for r in read_manifest(manifest) if r[1] not in redone] + rows
+    rows.sort(key=lambda r: r[1])
     write_manifest(manifest, rows)
 
-    msg = u"完成：產生 %d 個模型\n輸出資料夾：%s\n答案表：%s" % (
-        len(set(r[0] for r in rows)), out_dir, os.path.basename(manifest))
+    msg = u"完成：產生 %d 個模型\n輸出資料夾：%s\n答案表：%s（共 %d 筆）" % (
+        made, out_dir, os.path.basename(manifest), len(rows))
     if skipped:
         msg += u"\n\n跳過 %d 個：\n" % len(skipped) + u"\n".join(u"・%s：%s" % s for s in skipped)
     forms.alert(msg)
@@ -820,8 +1408,8 @@ def generate(todo, open_src, out_dir, base, workshared, rows, skipped):
             if pb.cancelled:
                 break
             pb.update_progress(i, len(todo))
-            # 每個變體用各自的種子：單獨重跑某一個也會得到同樣結果
-            rng = random.Random(SEED + VARIANTS.index((name, op)))
+            # 每個變體用各自的種子（依名稱開頭的編號）：單獨重跑、或清單順序調整，都會得到同樣結果
+            rng = random.Random(SEED + int(name.split(u"_")[0]))
             dst = os.path.join(out_dir, u"%s %s.rvt" % (base, name))
             try:
                 recs = run_variant(open_src, dst, name, op, workshared, rng)

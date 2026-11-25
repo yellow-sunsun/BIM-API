@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
 	<AddIn Type="Command">
-		<Name>BIM批改系統</Name>
-		<Assembly>D:\bim API\專案\BIM-API\RevitGradingTool\bin\Debug\RevitGradingTool.dll</Assembly>
+		<Name>BIM???t??</Name>
+		<Assembly>D:\bim API\?M??\BIM-API\RevitGradingTool\bin\Debug\RevitGradingTool.dll</Assembly>
 		<FullClassName>RevitGradingTool.HelloRevit</FullClassName>
 		<ClientId>a1b2c3d4-e5f6-7890-abcd-ef1234567890</ClientId>
 		<VendorId>NTUST</VendorId>
-		<VendorDescription>台科大BIM課</VendorDescription>
+		<VendorDescription>?x??jBIM??</VendorDescription>
 	</AddIn>
 </RevitAddIns>

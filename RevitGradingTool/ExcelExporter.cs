@@ -24,7 +24,7 @@ namespace RevitGradingTool
 
             lines.Add("");
             lines.Add("--- \u932f\u8aa4\u8a73\u7d30 ---");
-            lines.Add("\u5b78\u751f,\u932f\u8aa4\u985e\u578b,\u69cb\u4ef6\u985e\u5225,\u6a13\u5c64,\u8aaa\u660e,X(mm),Y(mm),Z(mm)");
+            lines.Add("\u5b78\u751f,\u932f\u8aa4\u985e\u578b,\u5206\u7d44,\u69cb\u4ef6\u985e\u5225,\u6a13\u5c64,\u8aaa\u660e,X(mm),Y(mm),Z(mm)");
 
             foreach (var s in students)
             {
@@ -35,7 +35,7 @@ namespace RevitGradingTool
                                       err.Type == ErrorType.WrongRotation ? "\u65cb\u8f49\u932f\u8aa4" :
                                       err.Type == ErrorType.WrongPosition ? "\u4f4d\u7f6e\u504f\u79fb" : "\u5c6c\u6027\u932f\u8aa4";
                     string detail = err.Detail.Replace(",", "\uff0c");
-                    lines.Add($"{s.Name},{typeName},{err.Category},{err.Level},{detail},{err.X:F0},{err.Y:F0},{err.Z:F0}");
+                    lines.Add($"{s.Name},{typeName},{err.Group},{err.Category},{err.Level},{detail},{err.X:F0},{err.Y:F0},{err.Z:F0}");
                 }
             }
 

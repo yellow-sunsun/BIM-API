@@ -28,11 +28,13 @@ namespace RevitGradingTool
         private int currentErrorIndex = -1;                            // 目前查看的是第幾個錯誤
         private readonly List<int> errorTextStarts = new List<int>();  // 每個錯誤在詳細框中的起始字元位置
         private ComboBox floorCombo;
+        private ComboBox groupCombo;
 
         public ModelSnapshot StandardSnapshot { get; private set; }
         public List<StudentResult> Students { get; private set; } = new List<StudentResult>();
         public StudentResult SelectedStudent { get; private set; }
         public string SelectedFloor => floorCombo?.SelectedItem?.ToString() ?? "\u5168\u90e8\u6a13\u5c64";
+        public string SelectedGroup => groupCombo?.SelectedItem?.ToString() ?? ComparisonEngine.ALL_GROUPS;
         public Dictionary<string, (double MinZ, double MaxZ)> FloorRanges { get; private set; } = new Dictionary<string, (double, double)>();
 
         public event EventHandler<StudentResult> HighlightRequested;
@@ -55,7 +57,7 @@ namespace RevitGradingTool
         {
             this.Text = "BIM \u4f5c\u696d\u6279\u6539\u7cfb\u7d71";
             this.Width = 420;
-            this.Height = 680;
+            this.Height = 730;
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.TopMost = true;
 
@@ -92,6 +94,26 @@ namespace RevitGradingTool
             floorCombo.Items.Add("\u5168\u90e8\u6a13\u5c64");
             floorCombo.SelectedIndex = 0;
             floorCombo.SelectedIndexChanged += (s, e) => RefreshStudentList();
+
+            // 構件類別篩選：只看結構、建築、樓梯扶手、設備家具…（比對一次，切換只是篩選顯示）
+            var groupLabel = new Label
+            {
+                Text = "\u69cb\u4ef6\u985e\u5225\uff1a",
+                Dock = DockStyle.Top,
+                Height = 20
+            };
+
+            groupCombo = new ComboBox
+            {
+                Dock = DockStyle.Top,
+                Height = 30,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            groupCombo.Items.Add(ComparisonEngine.ALL_GROUPS);
+            foreach (var g in ComparisonEngine.Groups)
+                groupCombo.Items.Add(g);
+            groupCombo.SelectedIndex = 0;
+            groupCombo.SelectedIndexChanged += (s, e) => RefreshStudentList();
 
             var listLabel = new Label
             {
@@ -212,6 +234,8 @@ namespace RevitGradingTool
             this.Controls.Add(errorCountLabel);
             this.Controls.Add(studentListBox);
             this.Controls.Add(listLabel);
+            this.Controls.Add(groupCombo);
+            this.Controls.Add(groupLabel);
             this.Controls.Add(floorCombo);
             this.Controls.Add(floorLabel);
             this.Controls.Add(loadStudentsBtn);
@@ -330,6 +354,7 @@ namespace RevitGradingTool
 
             var engine = new ComparisonEngine();
             string floor = SelectedFloor;
+            string group = SelectedGroup;
 
             for (int i = 0; i < Students.Count; i++)
             {
@@ -339,11 +364,14 @@ namespace RevitGradingTool
                     errors = engine.Compare(StandardSnapshot, Students[i].Snapshot, floor, FloorRanges);
                     Students[i].ErrorsByFloor[floor] = errors;
                 }
+                if (group != ComparisonEngine.ALL_GROUPS)
+                    errors = errors.FindAll(e => e.Group == group);
                 Students[i].Errors = errors;
+
                 studentListBox.Items.Add($"{Students[i].Name}\u3000\u3000\u932f\u8aa4\uff1a{errors.Count} \u500b");
             }
 
-            // 切換樓層後保留原本選的學生，錯誤詳細會自動換成該樓層的結果
+            // 切換樓層或類別後保留原本選的學生，錯誤詳細會自動換成篩選後的結果
             if (selected >= 0 && selected < studentListBox.Items.Count)
                 studentListBox.SelectedIndex = selected;
         }
