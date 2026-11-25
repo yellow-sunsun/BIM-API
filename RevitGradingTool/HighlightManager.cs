@@ -37,6 +37,18 @@ namespace RevitGradingTool
 
         public Document Doc => _doc;
 
+        // 合併的錯誤（例如一起被移動的牆和門）：組裡每個構件都要標色
+        private static IEnumerable<CompareError> WithRelated(List<CompareError> errors)
+        {
+            foreach (var err in errors)
+            {
+                yield return err;
+                if (err.Related == null) continue;
+                foreach (var r in err.Related) yield return r;
+            }
+        }
+
+
         // 找預設的 {3D} 視圖，沒有的話建立一個
         public static View3D Get3DView(Document doc)
         {
@@ -101,7 +113,7 @@ namespace RevitGradingTool
             using (var tx = new Transaction(_doc, "\u6a19\u8272\u5b78\u751f\u932f\u8aa4"))
             {
                 tx.Start();
-                foreach (var err in errors)
+                foreach (var err in WithRelated(errors))
                 {
                     XYZ position = new XYZ(err.X * MM, err.Y * MM, err.Z * MM);
                     if (err.Type == ErrorType.Extra)
@@ -121,7 +133,7 @@ namespace RevitGradingTool
             using (var tx = new Transaction(_doc, "\u6a19\u8272\u5b78\u751f\u932f\u8aa4"))
             {
                 tx.Start();
-                foreach (var err in errors)
+                foreach (var err in WithRelated(errors))
                 {
                     XYZ position = new XYZ(err.RawStudentX * MM, err.RawStudentY * MM, err.RawStudentZ * MM);
                     if (err.Type == ErrorType.Missing)

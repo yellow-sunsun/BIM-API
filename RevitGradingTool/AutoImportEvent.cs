@@ -120,6 +120,18 @@ namespace RevitGradingTool
 
             Panel.SetStudents(results);
 
+            // 測試模型（資料夾裡有 pyRevit 產生的答案表）：自動對照答案表、匯出快照與驗證報告
+            try
+            {
+                Panel.ShowProgress("自動驗證中…");
+                string summary = TestValidation.Run(StandardRvtPath, standard, results);
+                Panel.ShowProgress(summary ?? $"完成：共比對 {results.Count} 位學生，點選查看錯誤");
+            }
+            catch (Exception ex)
+            {
+                Panel.ShowProgress($"完成：共比對 {results.Count} 位學生（自動驗證失敗：{ex.Message}）");
+            }
+
             if (failed.Count > 0)
                 TaskDialog.Show("部分檔案無法開啟",
                     $"共 {failed.Count} 個檔案略過：\n" + string.Join("\n", failed));

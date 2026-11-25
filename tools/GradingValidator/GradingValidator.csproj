@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 離線驗證工具：用 add-in 同一份比對引擎，對照答案表檢查每個測試學生的錯誤數 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\RevitGradingTool\ComparisonEngine.cs" Link="ComparisonEngine.cs" />
+    <Compile Include="..\..\RevitGradingTool\Snapshot.cs" Link="Snapshot.cs" />
+  </ItemGroup>
+</Project>

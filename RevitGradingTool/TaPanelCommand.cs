@@ -19,6 +19,7 @@ namespace RevitGradingTool
 
             var highlightEvent = new HighlightEvent();
             var exEvent = ExternalEvent.Create(highlightEvent);
+            highlightEvent.Self = exEvent;   // 先開模型、並排後再自動放大到錯誤時要用
 
             var panel = new TaPanel();
 

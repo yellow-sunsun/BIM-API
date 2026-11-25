@@ -57,7 +57,8 @@ namespace RevitGradingTool
         {
             this.Text = "BIM \u4f5c\u696d\u6279\u6539\u7cfb\u7d71";
             this.Width = 420;
-            this.Height = 730;
+            this.Height = 750;
+
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.TopMost = true;
 
@@ -114,6 +115,32 @@ namespace RevitGradingTool
                 groupCombo.Items.Add(g);
             groupCombo.SelectedIndex = 0;
             groupCombo.SelectedIndexChanged += (s, e) => RefreshStudentList();
+
+            // 樓層範圍、構件類別並排，上下留空間
+            foreach (Control c in new Control[] { floorLabel, floorCombo, groupLabel, groupCombo })
+            {
+                c.Dock = DockStyle.Fill;
+                c.Margin = new Padding(0, 0, 8, 0);
+            }
+            floorLabel.TextAlign = System.Drawing.ContentAlignment.BottomLeft;
+            groupLabel.TextAlign = System.Drawing.ContentAlignment.BottomLeft;
+
+            var filterPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 78,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(6, 12, 0, 12)
+            };
+            filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            filterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            filterPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            filterPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            filterPanel.Controls.Add(floorLabel, 0, 0);
+            filterPanel.Controls.Add(groupLabel, 1, 0);
+            filterPanel.Controls.Add(floorCombo, 0, 1);
+            filterPanel.Controls.Add(groupCombo, 1, 1);
 
             var listLabel = new Label
             {
@@ -216,6 +243,16 @@ namespace RevitGradingTool
             };
             exportBtn.Click += (s, e) => ExportRequested?.Invoke(this, e);
 
+            // 除錯用：把標準模型與目前學生的快照存成 JSON，可以拿去離線分析比對結果
+            var dumpBtn = new Button
+            {
+                Text = "\u532f\u51fa\u6bd4\u5c0d\u8cc7\u6599\uff08JSON\uff0c\u9664\u932f\u7528\uff09",
+                Dock = DockStyle.Top,
+                Height = 28,
+                BackColor = System.Drawing.Color.Gainsboro
+            };
+            dumpBtn.Click += (s, e) => DumpSnapshots();
+
             var clearBtn = new Button
             {
                 Text = "\u6e05\u9664\u6a19\u8272",
@@ -227,6 +264,7 @@ namespace RevitGradingTool
 
             this.Controls.Add(errorDetailBox);
             this.Controls.Add(detailLabel);
+            this.Controls.Add(dumpBtn);
             this.Controls.Add(exportBtn);
             this.Controls.Add(clearBtn);
             this.Controls.Add(navPanel);
@@ -234,10 +272,7 @@ namespace RevitGradingTool
             this.Controls.Add(errorCountLabel);
             this.Controls.Add(studentListBox);
             this.Controls.Add(listLabel);
-            this.Controls.Add(groupCombo);
-            this.Controls.Add(groupLabel);
-            this.Controls.Add(floorCombo);
-            this.Controls.Add(floorLabel);
+            this.Controls.Add(filterPanel);
             this.Controls.Add(loadStudentsBtn);
             this.Controls.Add(loadStandardBtn);
         }
@@ -458,7 +493,32 @@ namespace RevitGradingTool
             FocusRequested?.Invoke(SelectedStudent, currentErrorIndex);
         }
 
+        private void DumpSnapshots()
+        {
+            if (StandardSnapshot == null || SelectedStudent?.Snapshot == null)
+            {
+                MessageBox.Show(this, "\u8acb\u5148\u8f09\u5165\u6a21\u578b\u4e26\u9ede\u9078\u4e00\u4f4d\u5b78\u751f", "\u532f\u51fa\u6bd4\u5c0d\u8cc7\u6599");
+                return;
+            }
+            var dlg = new FolderBrowserDialog { Description = "\u9078\u64c7\u5b58\u653e\u6bd4\u5c0d\u8cc7\u6599\u7684\u8cc7\u6599\u593e" };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            string Save(string name, ModelSnapshot snap)
+            {
+                foreach (var c in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+                string path = System.IO.Path.Combine(dlg.SelectedPath, name + "_snapshot.json");
+                System.IO.File.WriteAllText(path,
+                    Newtonsoft.Json.JsonConvert.SerializeObject(snap, Newtonsoft.Json.Formatting.Indented));
+                return path;
+            }
+
+            string p1 = Save(StandardSnapshot.ModelName ?? "\u6a19\u6e96\u6a21\u578b", StandardSnapshot);
+            string p2 = Save(SelectedStudent.Name, SelectedStudent.Snapshot);
+            MessageBox.Show(this, $"\u5df2\u532f\u51fa\uff1a\n{p1}\n{p2}", "\u532f\u51fa\u6bd4\u5c0d\u8cc7\u6599");
+        }
+
         private void HighlightBtn_Click(object sender, EventArgs e)
+
         {
             if (SelectedStudent != null)
                 HighlightRequested?.Invoke(this, SelectedStudent);

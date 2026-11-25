@@ -37,6 +37,13 @@ namespace RevitGradingTool
         public string FamilyName { get; set; }
         public string FamilyType { get; set; }
         public string Group { get; set; }          // 類別分組（結構 / 建築 / 樓梯扶手…），面板篩選用
+
+        // 合併成這個錯誤的其他構件（例如一起被移動的牆和門），標色時一併標出
+        public List<CompareError> Related { get; set; } = new List<CompareError>();
+
+        public long HostId { get; set; }           // 構件依附的主體 Id（缺少的用標準模型的、多餘的用學生模型的）
+        public List<string> DiffKeys { get; set; } = new List<string>();   // 屬性錯誤中不同的項目（類型、級高、扶手高度…）
+
     }
 
     public class ComparisonEngine
@@ -67,10 +74,28 @@ namespace RevitGradingTool
             XYZOffset offset = CalcOffset(filteredStd, filteredStu);
             ModelSnapshot correctedStudent = ApplyOffset(filteredStu, offset);
 
+            // 配對分三輪，每一輪對全部構件做完才進下一輪：
+            //   1. 族群、類型相同，而且方向相同（線型構件如牆、梁：平行才算）
+            //   2. 族群、類型相同（方向不同 → 旋轉錯誤）
+            //   3. 任何類型（類型錯誤）
+            // 若逐一處理，被移走的牆會先搶走旁邊別的牆（另一種女兒牆、或垂直相接被拉長的同類型牆），
+            // 一個錯誤會變成好幾個
+            var matchOf = new int[filteredStd.Elements.Count];
+            for (int i = 0; i < matchOf.Length; i++) matchOf[i] = -1;
+            for (int pass = 0; pass < 3; pass++)
+            {
+                for (int i = 0; i < matchOf.Length; i++)
+                {
+                    if (matchOf[i] >= 0) continue;
+                    matchOf[i] = FindClosest(filteredStd.Elements[i], correctedStudent.Elements, matched, pass);
+                    if (matchOf[i] >= 0) matched.Add(matchOf[i]);
+                }
+            }
+
             for (int i = 0; i < filteredStd.Elements.Count; i++)
             {
                 var stdEl = filteredStd.Elements[i];
-                int foundIdx = FindClosest(stdEl, correctedStudent.Elements, matched);
+                int foundIdx = matchOf[i];
 
                 if (foundIdx == -1)
                 {
@@ -94,11 +119,10 @@ namespace RevitGradingTool
                     continue;
                 }
 
-                matched.Add(foundIdx);
                 var stuEl = correctedStudent.Elements[foundIdx];
                 var rawEl = filteredStu.Elements[foundIdx];
 
-                var attrErrors = CheckAttributes(stdEl, stuEl);
+                var attrErrors = CheckAttributes(stdEl, stuEl, out var diffKeys);
                 if (attrErrors.Count > 0)
                 {
                     errors.Add(Info(new CompareError
@@ -117,7 +141,8 @@ namespace RevitGradingTool
                         RawStudentX = rawEl.X,
                         RawStudentY = rawEl.Y,
                         RawStudentZ = rawEl.Z,
-                        Detail = string.Join("\uff1b", attrErrors)
+                        Detail = string.Join("\uff1b", attrErrors),
+                        DiffKeys = diffKeys
                     }, stdEl));
                 }
 
@@ -176,14 +201,18 @@ namespace RevitGradingTool
 
             foreach (var missing in missingErrors)
             {
-                // 原本的 6 個類別：同類別、1m 內就配對（維持原本結果）。
+                // 原本的 6 個類別：同類別、1m 內就配對（同類型的優先）。
                 // 其他構件（衛浴、設備、樓梯…）：族群與類型都要相同才配對，範圍放寬到 3m，
                 // 避免「少一個馬桶、多一個洗手台」被當成「馬桶放錯位置」
                 bool legacy = IsLegacy(KeyOf(missing));
                 double radius = legacy ? 1000.0 : 3000.0;
 
-                foreach (var extra in extraErrors)
+                // 同類型的多餘構件排在前面，優先配對
+                var ordered = extraErrors.Where(e => e.FamilyName == missing.FamilyName && e.FamilyType == missing.FamilyType)
+                    .Concat(extraErrors.Where(e => !(e.FamilyName == missing.FamilyName && e.FamilyType == missing.FamilyType)));
+                foreach (var extra in ordered)
                 {
+
                     if (KeyOf(extra) != KeyOf(missing)) continue;
                     if (toRemove.Contains(extra)) continue;
                     if (!legacy && (extra.FamilyName != missing.FamilyName || extra.FamilyType != missing.FamilyType))
@@ -228,7 +257,129 @@ namespace RevitGradingTool
             foreach (var r in toRemove) errors.Remove(r);
             errors.AddRange(toAdd);
 
-            return errors;
+            return MergeTypeEdits(MergeGroupMoves(MergeHostedParts(errors)));
+        }
+
+        // 屬於「類型」的參數：改的是類型內容，所有用這個類型的構件會一起改變
+        private static readonly HashSet<string> TypeLevelKeys = new HashSet<string>
+        {
+            "\u6700\u5927\u7d1a\u9ad8", "\u6700\u5c0f\u7d1a\u6df1", "\u5e73\u53f0\u539a\u5ea6", "\u6276\u624b\u9ad8\u5ea6", "\u539a\u5ea6"
+        };
+
+        // 直接修改了類型內容（例如把「900mm 方管」的扶手高度改成 700），使用這個類型的每個構件都會不同。
+        // 學生只做錯一件事，所以類型、差異內容都相同的屬性錯誤合併成 1 個
+        private static List<CompareError> MergeTypeEdits(List<CompareError> errors)
+        {
+            var result = new List<CompareError>(errors);
+            var groups = errors
+                .Where(e => e.Type == ErrorType.WrongAttr && e.DiffKeys != null && e.DiffKeys.Count > 0 &&
+                            e.DiffKeys.All(key => TypeLevelKeys.Contains(key)))
+                .GroupBy(e => $"{KeyOf(e)}|{e.FamilyName}|{e.FamilyType}|{e.Detail}")
+                .Where(g => g.Count() > 1);
+            foreach (var g in groups)
+            {
+                var members = g.ToList();
+                var leader = members[0];
+                leader.Related.AddRange(members.Skip(1));
+                leader.Detail += $"\uff08\u76f4\u63a5\u4fee\u6539\u4e86\u985e\u578b\u300c{leader.FamilyType}\u300d\u7684\u5167\u5bb9\uff0c\u4f7f\u7528\u6b64\u985e\u578b\u7684 {members.Count} \u500b\u69cb\u4ef6\u90fd\u53d7\u5f71\u97ff\uff0c\u7b97 1 \u500b\u932f\u8aa4\uff09";
+                foreach (var e in members.Skip(1)) result.Remove(e);
+            }
+            return result;
+        }
+
+
+        // 整個構件缺少（或多餘）時，依附在它上面、也一起缺少的構件不另外算錯：
+        // 少一座樓梯＝1 個錯誤（不是樓梯＋扶手各一個）；少一面牆＝1 個錯誤（牆上的門窗不另算）。
+        // 樓梯還在、只是級深或平台錯，仍然照常各自報錯
+        private static List<CompareError> MergeHostedParts(List<CompareError> errors)
+        {
+            var result = new List<CompareError>(errors);
+            foreach (var type in new[] { ErrorType.Missing, ErrorType.Extra })
+            {
+                var list = errors.Where(e => e.Type == type).ToList();
+                Func<CompareError, long> idOf = e => type == ErrorType.Missing ? e.StdElementId : e.StuElementId;
+                var byId = new Dictionary<long, CompareError>();
+                foreach (var e in list)
+                    if (idOf(e) != 0 && !byId.ContainsKey(idOf(e))) byId[idOf(e)] = e;
+                var stairs = list.Where(e => KeyOf(e) == "OST_Stairs").ToList();
+
+                foreach (var e in list)
+                {
+                    CompareError parent = null;
+                    if (e.HostId != 0 && byId.TryGetValue(e.HostId, out var p) && p != e)
+                        parent = p;
+                    else if (e.HostId == 0 && KeyOf(e) == "OST_StairsRailing")
+                    {
+                        // 有些模型的樓梯扶手沒有記錄依附的樓梯：用位置判斷（3m 內最近的那座）
+                        parent = stairs.OrderBy(s => Dist(s, e)).FirstOrDefault(s => Dist(s, e) < 3000.0);
+                    }
+                    if (parent == null) continue;
+                    parent.Related.Add(e);
+                    result.Remove(e);
+                }
+
+                foreach (var parent in list.Where(e => result.Contains(e) && e.Related.Count > 0))
+                {
+                    parent.Detail += $"\uff08\u9023\u540c\u4f9d\u9644\u7684 {parent.Related.Count} \u500b\u69cb\u4ef6\uff1a" +
+                                     string.Join("\u3001", parent.Related.Select(r => $"{r.Category} {r.FamilyType}")) + "\uff09";
+                }
+            }
+            return result;
+        }
+
+        private static double Dist(CompareError a, CompareError b) =>
+            Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
+
+        // 一起被移動的構件算一個錯誤：位移量相同（差 20mm 內）、彼此相鄰（5m 內，可串連）的「位置偏移」合併。
+        // 例如一面牆移走時，鎖在一起的另一面牆和牆上的門也跟著移動——學生只做錯了一件事
+        private static List<CompareError> MergeGroupMoves(List<CompareError> errors)
+        {
+            var moves = errors.Where(e => e.Type == ErrorType.WrongPosition).ToList();
+            if (moves.Count < 2) return errors;
+
+            int n = moves.Count;
+            var parent = Enumerable.Range(0, n).ToArray();
+            int Root(int a) { while (parent[a] != a) a = parent[a] = parent[parent[a]]; return a; }
+
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = i + 1; j < n; j++)
+                {
+                    var a = moves[i]; var b = moves[j];
+                    double ddx = (a.StudentX - a.X) - (b.StudentX - b.X);
+                    double ddy = (a.StudentY - a.Y) - (b.StudentY - b.Y);
+                    double ddz = (a.StudentZ - a.Z) - (b.StudentZ - b.Z);
+                    if (Math.Sqrt(ddx * ddx + ddy * ddy + ddz * ddz) > 20.0) continue;
+                    double dist = Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
+                    if (dist > 5000.0) continue;
+                    parent[Root(i)] = Root(j);
+                }
+            }
+
+            var result = new List<CompareError>(errors);
+            foreach (var grp in Enumerable.Range(0, n).GroupBy(Root).Where(g => g.Count() > 1))
+            {
+                // 代表的構件：結構 → 牆 → 樓板 → 其他（門窗等跟著移動的放後面）
+                var members = grp.Select(i => moves[i]).OrderBy(e => MoveRank(KeyOf(e))).ToList();
+                var leader = members[0];
+                leader.Related = members.Skip(1).ToList();
+                leader.Detail += $"\uff08\u540c\u4e00\u7d44\u4e00\u8d77\u504f\u79fb\u7684\u9084\u6709 {leader.Related.Count} \u500b\u69cb\u4ef6\uff1a" +
+                                 string.Join("\u3001", leader.Related.Select(e => $"{e.Category} {e.FamilyType}")) + "\uff09";
+                foreach (var e in leader.Related) result.Remove(e);
+            }
+            return result;
+        }
+
+        private static int MoveRank(string key)
+        {
+            switch (key ?? "")
+            {
+                case "OST_StructuralColumns": case "\u7d50\u69cb\u67f1": return 0;
+                case "OST_StructuralFraming": case "\u7d50\u69cb\u69cb\u67b6": return 1;
+                case "OST_Walls": case "\u7246": return 2;
+                case "OST_Floors": case "\u6a13\u677f": return 3;
+                default: return 4;
+            }
         }
 
         // 錯誤帶上構件的類別代碼、族群、類型、分組
@@ -238,6 +389,7 @@ namespace RevitGradingTool
             err.FamilyName = el.FamilyName;
             err.FamilyType = el.FamilyType;
             err.Group = GroupOf(KeyOf(el));
+            err.HostId = el.HostId;
             return err;
         }
 
@@ -494,6 +646,8 @@ namespace RevitGradingTool
                     Rotation = el.Rotation,
                     IsLinear = el.IsLinear,
                     Level = el.Level,
+                    HostId = el.HostId,
+
                     Nums = el.Nums,
                     Texts = el.Texts
                 });
@@ -510,9 +664,11 @@ namespace RevitGradingTool
                     return 100.0;
                 case "OST_Floors": case "\u6a13\u677f": case "OST_Walls": case "\u7246":
                 case "OST_Roofs": case "OST_Ceilings": case "OST_Toposolid": case "OST_Topography": case "OST_Ramps":
+                case "OST_StairsRailing":   // 欄杆很長、用外框中心定位，延伸段重新生成時中心容易移動 200~300mm
                     return 500.0;
-                case "OST_Stairs": case "OST_StairsRailing": case "OST_ShaftOpening":
-                    return 300.0;   // 樓梯、扶手用外框中心定位，改級高或梯段寬度時中心會小幅移動
+                case "OST_Stairs": case "OST_ShaftOpening":
+                    return 300.0;   // 樓梯用外框中心定位，改級高或梯段寬度時中心會小幅移動
+
                 case "OST_PlumbingFixtures": case "OST_Furniture": case "OST_FurnitureSystems":
                 case "OST_SpecialityEquipment": case "OST_GenericModel": case "OST_Casework":
                 case "OST_LightingFixtures": case "OST_ElectricalFixtures": case "OST_ElectricalEquipment":
@@ -524,8 +680,18 @@ namespace RevitGradingTool
             }
         }
 
-        private int FindClosest(ElementSnapshot target, List<ElementSnapshot> candidates, HashSet<int> used)
+
+        private static bool SameType(ElementSnapshot a, ElementSnapshot b) =>
+            (a.FamilyName ?? "") == (b.FamilyName ?? "") && (a.FamilyType ?? "") == (b.FamilyType ?? "");
+
+        // 線型構件（牆、梁、管線）方向相同（平行，容許 5°）；非線型構件不看方向
+        private static bool SameDirection(ElementSnapshot a, ElementSnapshot b) =>
+            !(a.IsLinear && b.IsLinear) || RotationDiff(a, b) <= 5.0;
+
+        // pass 0：同類型且同方向；pass 1：同類型；pass 2：不限類型
+        private int FindClosest(ElementSnapshot target, List<ElementSnapshot> candidates, HashSet<int> used, int pass)
         {
+            bool sameTypeOnly = pass <= 1;
             int bestIdx = -1;
             double bestDist = double.MaxValue;
             string key = KeyOf(target);
@@ -535,6 +701,9 @@ namespace RevitGradingTool
             {
                 if (used.Contains(i)) continue;
                 if (KeyOf(candidates[i]) != key) continue;
+                if (sameTypeOnly && !SameType(target, candidates[i])) continue;
+                if (pass == 0 && !SameDirection(target, candidates[i])) continue;
+
 
                 var c = candidates[i];
                 double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
@@ -554,19 +723,24 @@ namespace RevitGradingTool
             return bestIdx;
         }
 
-        private List<string> CheckAttributes(ElementSnapshot std, ElementSnapshot stu)
+        // 比對屬性，回傳每一項差異的說明；keys 是不同的項目名稱（用來判斷是不是「改了類型內容」）
+        private List<string> CheckAttributes(ElementSnapshot std, ElementSnapshot stu, out List<string> keys)
         {
             var errors = new List<string>();
+            var k = new List<string>();
+            keys = k;
+
+            void Diff(string key, string message) { k.Add(key); errors.Add(message); }
 
             if (!string.IsNullOrEmpty(std.FamilyName) && !string.IsNullOrEmpty(stu.FamilyName) &&
                 std.FamilyName != stu.FamilyName)
-                errors.Add($"\u65cf\u7fa4\u61c9\u70ba\u300c{std.FamilyName}\u300d\uff0c\u5b78\u751f\u7528\u7684\u662f\u300c{stu.FamilyName}\u300d");
+                Diff("\u65cf\u7fa4", $"\u65cf\u7fa4\u61c9\u70ba\u300c{std.FamilyName}\u300d\uff0c\u5b78\u751f\u7528\u7684\u662f\u300c{stu.FamilyName}\u300d");
 
             if (!string.IsNullOrEmpty(std.FamilyType) && std.FamilyType != stu.FamilyType)
-                errors.Add($"\u65cf\u7fa4\u985e\u578b\u61c9\u70ba\u300c{std.FamilyType}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.FamilyType}\u300d");
+                Diff("\u985e\u578b", $"\u65cf\u7fa4\u985e\u578b\u61c9\u70ba\u300c{std.FamilyType}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.FamilyType}\u300d");
 
             if (!string.IsNullOrEmpty(std.Material) && std.Material != stu.Material)
-                errors.Add($"\u6750\u8cea\u61c9\u70ba\u300c{std.Material}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.Material}\u300d");
+                Diff("\u6750\u8cea", $"\u6750\u8cea\u61c9\u70ba\u300c{std.Material}\u300d\uff0c\u5b78\u751f\u586b\u7684\u662f\u300c{stu.Material}\u300d");
 
             // 參數（樓梯級高、級深、階數、牆高、扶手高度…）：兩邊都有的才比
             if (std.Nums != null && stu.Nums != null)
@@ -575,7 +749,7 @@ namespace RevitGradingTool
                 {
                     if (!stu.Nums.TryGetValue(kv.Key, out double v)) continue;
                     if (Math.Abs(v - kv.Value) > NumTolerance(kv.Key))
-                        errors.Add($"{kv.Key}\u61c9\u70ba {FormatNum(kv.Key, kv.Value)}\uff0c\u5b78\u751f\u7684\u662f {FormatNum(kv.Key, v)}");
+                        Diff(kv.Key, $"{kv.Key}\u61c9\u70ba {FormatNum(kv.Key, kv.Value)}\uff0c\u5b78\u751f\u7684\u662f {FormatNum(kv.Key, v)}");
                 }
             }
             if (std.Texts != null && stu.Texts != null)
@@ -584,7 +758,7 @@ namespace RevitGradingTool
                 {
                     if (!stu.Texts.TryGetValue(kv.Key, out string v)) continue;
                     if (v != kv.Value)
-                        errors.Add($"{kv.Key}\u61c9\u70ba\u300c{kv.Value}\u300d\uff0c\u5b78\u751f\u7684\u662f\u300c{v}\u300d");
+                        Diff(kv.Key, $"{kv.Key}\u61c9\u70ba\u300c{kv.Value}\u300d\uff0c\u5b78\u751f\u7684\u662f\u300c{v}\u300d");
                 }
             }
 

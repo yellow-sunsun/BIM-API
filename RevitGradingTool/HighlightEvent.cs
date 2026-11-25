@@ -30,6 +30,15 @@ namespace RevitGradingTool
         {
             try
             {
+                // 上一步開了學生模型：這時 Revit 才把視窗都建立好，關掉多出來的視窗、重新並排
+                if (_cleanupPending)
+                {
+                    _cleanupPending = false;
+                    CleanupWindows(app);
+                    if (_focusDeferred && Self != null) Self.Raise();   // 並排好之後再放大到錯誤
+                    return;
+                }
+
                 if (Mode == HighlightMode.Focus)
                     DoFocus(app);
                 else
@@ -76,6 +85,7 @@ namespace RevitGradingTool
             // 標準模型切到 3D 視圖
             var stdUi = app.ActiveUIDocument;
             var stdView = Show3D(stdUi);
+            _stdView = stdView;
             _standardDoc = standardDoc;
             _standardManager = new HighlightManager(standardDoc, stdView);
             stdUi.GetOpenUIViews().FirstOrDefault(v => v.ViewId == stdView.Id)?.ZoomToFit();
@@ -98,17 +108,29 @@ namespace RevitGradingTool
 
                 // 學生模型也切到 3D 視圖
                 var stuView = Show3D(uiDoc);
+                _stuView = stuView;
                 uiDoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == stuView.Id)?.ZoomToFit();
                 _studentManager = new HighlightManager(_studentDoc, stuView);
                 _studentManager.HighlightStudent(Errors);
 
-                // 切換回標準模型讓它在左邊
-                app.OpenAndActivateDocument(standardDoc.PathName);
+                // 切換回標準模型讓它在左邊。Revit 切回時有時會再開一個標準模型的視窗，
+                // 只留下標準模型的 3D 視窗，並排後才會剛好是「標準 3D＋學生 3D」兩個
+                var stdUiBack = app.OpenAndActivateDocument(standardDoc.PathName);
+                KeepSingleWindow(stdUiBack, stdView);
+                KeepSingleWindow(new UIDocument(_studentDoc), stuView);
 
                 // 並排視窗
                 var tileCmd = RevitCommandId.LookupPostableCommandId(PostableCommand.TileViews);
                 if (tileCmd != null)
                     app.PostCommand(tileCmd);
+
+                // Revit 會在這一步結束後才建立（切回標準模型時多出來的）視窗，
+                // 所以排一個下一步來收尾：關掉多的視窗、重新並排
+                if (Self != null)
+                {
+                    _cleanupPending = true;
+                    Self.Raise();
+                }
             }
             catch (System.Exception ex)
             {
@@ -126,11 +148,20 @@ namespace RevitGradingTool
                          _standardDoc != null && _standardDoc.IsValidObject &&
                          (string.IsNullOrEmpty(StudentRvtPath) ||
                           (_studentDoc != null && _studentDoc.IsValidObject));
-            if (!ready)
+            if (!ready && !_focusDeferred)
             {
-                Mode = HighlightMode.Highlight;
                 DoHighlight(app);
+                // 剛開啟學生模型時，「並排視窗」要等這次執行結束才會生效，這時放大學生視圖會是空白的。
+                // 先結束這次，等並排完成後再自動執行一次放大
+                if (Self != null)
+                {
+                    _focusDeferred = true;
+                    Mode = HighlightMode.Focus;
+                    Self.Raise();
+                    return;
+                }
             }
+            _focusDeferred = false;
             if (_standardManager == null) return;
 
             var err = Errors[FocusIndex];
@@ -148,7 +179,41 @@ namespace RevitGradingTool
                     stdCenter - shift, !stdActive);
         }
 
+        // 自己的 ExternalEvent（由 TaPanelCommand 設定），用來在並排視窗後再執行一次放大
+        public ExternalEvent Self { get; set; }
+        private bool _focusDeferred;
+        private bool _cleanupPending;
+        private View _stdView;
+        private View _stuView;
+
+        // 標準模型、學生模型各只留一個 3D 視窗，再並排
+        private void CleanupWindows(UIApplication app)
+        {
+            if (_standardDoc != null && _standardDoc.IsValidObject && _stdView != null && _stdView.IsValidObject)
+                KeepSingleWindow(new UIDocument(_standardDoc), _stdView);
+            if (_studentDoc != null && _studentDoc.IsValidObject && _stuView != null && _stuView.IsValidObject)
+                KeepSingleWindow(new UIDocument(_studentDoc), _stuView);
+
+            var tileCmd = RevitCommandId.LookupPostableCommandId(PostableCommand.TileViews);
+            if (tileCmd != null)
+                app.PostCommand(tileCmd);
+        }
+
+
+        // 一個文件只留一個視窗：保留指定視圖的第一個視窗，其他（重複的、別的視圖）都關掉
+        private static void KeepSingleWindow(UIDocument uiDoc, View keep)
+        {
+            if (uiDoc == null || keep == null) return;
+            bool kept = false;
+            foreach (var uv in uiDoc.GetOpenUIViews())
+            {
+                if (!kept && uv.ViewId == keep.Id) { kept = true; continue; }
+                try { uv.Close(); } catch { }
+            }
+        }
+
         private ModelSnapshot _centerOf;
+
         private XYZ _center = XYZ.Zero;
 
         // 標準模型所有構件的平均位置（mm）

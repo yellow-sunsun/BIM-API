@@ -67,6 +67,12 @@ namespace RevitGradingTool
             var bic = cat.BuiltInCategory;
             if (bic == BuiltInCategory.OST_Mass) return false;   // 量體是概念設計用，不是構件
 
+            // 欄杆的組成零件（欄杆柱、頂部扶手、扶手、支撐、端點…）跟著欄杆比對，不單獨列出
+            string bicName = bic.ToString();
+            if (bicName.StartsWith("OST_Railing") || bic == BuiltInCategory.OST_StairsRailingBaluster ||
+                bic == BuiltInCategory.OST_StairsRailingRail)
+                return false;
+
             if (el is FamilyInstance fi)
             {
                 if (fi.SuperComponent != null) return false;   // 巢狀子元件跟著上層族群比對，避免重複計算
@@ -95,6 +101,7 @@ namespace RevitGradingTool
             };
 
             ReadPosition(el, bic, snap);
+            snap.HostId = HostIdOf(el);
 
             // 讀取構件所在樓層（不同類別用不同參數）
             Parameter levelParam;
@@ -324,7 +331,17 @@ namespace RevitGradingTool
             }
         }
 
+        // 依附的主體（牆上的門窗、樓梯上的扶手、樓板上的開口…）；依附在樓層、參考平面上的不算
+        private static long HostIdOf(Element el)
+        {
+            if (el is FamilyInstance fi && fi.Host != null && !(fi.Host is Level)) return fi.Host.Id.Value;
+            if (el is Railing r && r.HostId != ElementId.InvalidElementId) return r.HostId.Value;
+            if (el is Opening op && op.Host != null) return op.Host.Id.Value;
+            return 0;
+        }
+
         private static string LevelName(Document doc, Element el, BuiltInParameter bip)
+
         {
             var p = el.get_Parameter(bip);
             if (p == null || !p.HasValue || p.StorageType != StorageType.ElementId) return "";

@@ -21,6 +21,7 @@ namespace RevitGradingTool
         public double Rotation { get; set; }
         public bool IsLinear { get; set; }        // 線型構件（牆、梁、管線…）：畫的方向相反不算錯，旋轉角只比到 180°
         public string Level { get; set; }         // 構件所在樓層
+        public long HostId { get; set; }          // 依附的主體元件 Id（門窗→牆、樓梯扶手→樓梯）；0 = 沒有依附
 
         // 需要比對的參數（例如樓梯的級高、級深、階數；牆高；門的翻轉）
         public Dictionary<string, double> Nums { get; set; } = new Dictionary<string, double>();   // 數值（mm 或個數）

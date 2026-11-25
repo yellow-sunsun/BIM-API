@@ -12,7 +12,6 @@
 """
 from __future__ import print_function
 
-import csv
 import io
 import os
 import random
@@ -32,7 +31,8 @@ from Autodesk.Revit.DB import (
     DetachFromCentralOption, SaveAsOptions, Transaction, Wall, WallKind,
     WorksharingSaveAsOptions, XYZ,
 )
-from Autodesk.Revit.DB import Plane
+from Autodesk.Revit.DB import DirectShape, HostObject, MEPCurve, Mullion, Opening, Panel, Plane
+
 
 from Autodesk.Revit.DB.Architecture import Railing, RailingType, Stairs, StairsLandingType, StairsType
 
@@ -430,6 +430,7 @@ def op_copy(kind, dx_mm, dy_mm):
 def op_move(kind, mm, how, expect=u"位置偏移 1"):
     """how: 'x' 沿 X 軸、'perp' 垂直於構件方向、'along_host' 沿著所在牆。"""
     def run(doc, rng):
+        unlock_constraints(doc)   # 鎖定的對齊會把同一直線上的其他牆、門一起拖走
         el = pick(doc, rng, kind)
         if how == "perp":
             v = perp_dir(el)
@@ -514,6 +515,7 @@ def op_change_type(kind):
 
 def op_rotate_column(deg):
     def run(doc, rng):
+        unlock_constraints(doc)
         el = pick(doc, rng, "col")
         p = el.Location.Point
         axis = Line.CreateBound(p, p + XYZ.BasisZ)
@@ -585,10 +587,18 @@ def moves_with_host(e):
         h = getattr(e, "Host", None)
     except Exception:
         h = None
-    if h is not None and not isinstance(h, Level):
-        return True
+    if h is not None:
+        # 只有主體是「會一起移動的實體構件」（牆、樓板、其他族群、樓梯）才會被帶著走。
+        # 主體是樓層、參考平面、工作平面的（例如以工作平面放置的一般模型）不會動，要自己移
+        return is_physical_host(h)
     host_id = getattr(e, "HostId", None)   # 例如樓梯上的欄杆
-    return host_id is not None and host_id != ElementId.InvalidElementId
+    if host_id is not None and host_id != ElementId.InvalidElementId:
+        return is_physical_host(e.Document.GetElement(host_id))
+    return False
+
+
+def is_physical_host(h):
+    return isinstance(h, (HostObject, FamilyInstance, Stairs, Railing))
 
 
 def movable_model_elements(doc):
@@ -657,11 +667,30 @@ def describe(doc, k):
     return u"%s / %s (%s)" % (cat, type_name(doc, e), k)
 
 
+def is_compared(e):
+    """跟批改工具（Class1.cs 的 ShouldCompare）相同的判斷：會被比對的實體構件。"""
+    cat = e.Category
+    if cat is None or cat.CategoryType != CategoryType.Model or e.ViewSpecific:
+        return False
+    if cat.Id == ElementId(BuiltInCategory.OST_Mass):   # 量體是概念設計用，不比對
+        return False
+    bic_name = str(cat.BuiltInCategory)   # 欄杆的組成零件（欄杆柱、扶手…）跟著欄杆，不單獨比對
+    if bic_name.startswith("OST_Railing") or bic_name in ("OST_StairsRailingBaluster", "OST_StairsRailingRail"):
+        return False
+    if isinstance(e, FamilyInstance):
+        return getattr(e, "SuperComponent", None) is None and not isinstance(e, (Panel, Mullion))
+    if isinstance(e, Wall):
+        return not e.IsStackedWallMember
+    if isinstance(e, (HostObject, Stairs, Railing, MEPCurve, Opening, DirectShape)):
+        return True
+    return cat.Id == ElementId(BuiltInCategory.OST_Ramps)
+
+
 def compared_positions(doc):
-    """批改會比對的 6 個類別：每個構件目前的位置（mm）。"""
+    """批改工具會比對的所有構件（不只結構與門窗）：每個構件目前的位置（mm）。"""
     pos = {}
-    for cat in ALL_CATS:
-        for e in FilteredElementCollector(doc).OfCategory(cat).WhereElementIsNotElementType():
+    for e in FilteredElementCollector(doc).WhereElementIsNotElementType():
+        if is_compared(e):
             pos[eid(e)] = location_mm(e)
     return pos
 
@@ -724,7 +753,9 @@ def op_shift_all(dx_mm, dy_mm):
                 break
             for k, mx, my, mz in bad:
                 e = doc.GetElement(ElementId(k))
-                if e is None or moves_with_host(e) or e.GroupId != ElementId.InvalidElementId:
+                # 依附構件一般跟著主體走、不另外移；但欄杆的路徑可能沒跟著主體正確平移，仍要補正
+                if e is None or e.GroupId != ElementId.InvalidElementId or \
+                        (moves_with_host(e) and not isinstance(e, Railing)):
                     continue
                 was_pinned = e.Pinned
                 try:
@@ -755,7 +786,7 @@ def op_shift_all(dx_mm, dy_mm):
         return [{"cat": u"全部", "id": u"", "level": u"", "x": 0, "y": 0, "z": 0,
                  "detail": u"整棟模型平移 (+%d, +%d) mm，共 %d 個構件%s" % (
                      dx_mm, dy_mm, ids.Count, u"".join(u"（%s）" % n for n in notes)),
-                 "expect": expect}]
+                 "expect": expect, "n": 0}]   # 整棟偏移：校正後應完全吻合
     return run
 
 
@@ -775,6 +806,7 @@ def move_dir(el):
 
 def op_move_auto(kind, mm):
     def run(doc, rng):
+        unlock_constraints(doc)
         el = pick(doc, rng, kind)
         r = record(doc, kind, el, u"平移 %d mm（類型 %s）" % (mm, type_name(doc, el)), u"位置偏移 1")
         ElementTransformUtils.MoveElement(doc, el.Id, move_dir(el) * (mm * MM))
@@ -784,6 +816,7 @@ def op_move_auto(kind, mm):
 
 def op_rotate(kind, deg):
     def run(doc, rng):
+        unlock_constraints(doc)
         el = pick(doc, rng, kind)
         p = center_xyz(el)
         axis = Line.CreateBound(p, p + XYZ.BasisZ)
@@ -1098,7 +1131,8 @@ def op_combo(*ops):
 
 def op_nothing(doc, rng):
     return [{"cat": u"", "id": u"", "level": u"", "x": 0, "y": 0, "z": 0,
-             "detail": u"沒有改動（對照組）", "expect": u"0 個錯誤"}]
+             "detail": u"沒有改動（對照組）", "expect": u"0 個錯誤", "n": 0}]
+
 
 
 VARIANTS = [
@@ -1226,11 +1260,75 @@ def save_variant(doc, dst, workshared):
     doc.SaveAs(dst, opts)
 
 
-MAX_TRIES = 5   # Revit 拒絕修改時，換別的構件再試幾次
+MAX_TRIES = 10   # Revit 拒絕修改、或會連帶移動其他構件時，換別的構件再試幾次
+
+
+def compare_tolerance_mm(e):
+    """跟批改工具相同的位置容許誤差：超過這個距離，批改時就會被當成錯誤。"""
+    cat = e.Category
+    key = cat.Id if cat is not None else None
+    def is_cat(bic):
+        return key is not None and key == ElementId(bic)
+    if is_cat(BuiltInCategory.OST_StructuralFraming):
+        return 100
+    if any(is_cat(b) for b in (BuiltInCategory.OST_Walls, BuiltInCategory.OST_Floors, BuiltInCategory.OST_Roofs,
+                               BuiltInCategory.OST_Ceilings, BuiltInCategory.OST_StairsRailing)):
+        return 500
+    if is_cat(BuiltInCategory.OST_Stairs):
+        return 300
+    if isinstance(e, FamilyInstance) and not any(is_cat(b) for b in (
+            BuiltInCategory.OST_StructuralColumns, BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows)):
+        return 100
+    return 50
+
+
+def host_eid(e):
+    """構件依附的主體 Id（沒有就回傳 None）。"""
+    try:
+        h = getattr(e, "Host", None)
+    except Exception:
+        h = None
+    if h is not None:
+        return eid(h)
+    hid = getattr(e, "HostId", None)
+    if hid is not None and hid != ElementId.InvalidElementId:
+        return hid.Value if hasattr(hid, "Value") else hid.IntegerValue
+    return None
+
+
+def side_effects(doc, before, target_ids):
+    """修改後，除了這個錯誤本身要改的構件以外，還有哪些構件被連帶移動或刪除
+    （超過批改的容許誤差、會被多報錯的才算）。依附在被修改構件上的（例如樓梯的扶手）不算。
+    回傳 (被移動的, 被刪除的)。"""
+    after = compared_positions(doc)
+    moved, deleted = [], []
+    for k, (x0, y0, z0) in before.items():
+        if k in target_ids:
+            continue
+        if k not in after:
+            deleted.append((k, u"被刪除"))
+            continue
+        e = doc.GetElement(ElementId(k))
+        if e is None or host_eid(e) in target_ids:
+            continue
+        x1, y1, z1 = after[k]
+        d = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+        if d > compare_tolerance_mm(e):
+            moved.append((k, u"移動 %.0f mm" % d))
+    return moved, deleted
+
+
+# 綜合題本來就會改很多構件，連帶影響只記錄、不重試；其他變體一律要求「只改到要改的構件」
+COMBO_PREFIXES = (u"26_", u"27_", u"39_", u"61_", u"62_", u"63_", u"64_")
 
 
 def try_once(doc, name, op, rng):
-    """在一個交易裡做一次修改。成功回傳記錄，失敗回傳 (None, 錯誤訊息)；文件會回到原狀。"""
+    """在一個交易裡做一次修改。成功回傳記錄，失敗回傳 (None, 錯誤訊息)；文件會回到原狀。
+    單一錯誤的變體若連帶移動了其他構件（例如鎖在一起的牆被一起拖走），整筆回復、換別的構件重試，
+    確保答案表寫幾個錯誤，模型就只有幾個地方不同。"""
+    check_side = not name.startswith(u"26_")   # 整棟偏移本來就會移動所有構件
+    strict = not name.startswith(COMBO_PREFIXES)
+    before = compared_positions(doc) if check_side else None
     t = Transaction(doc, u"產生錯誤：" + name)
     pre = SwallowWarnings()
     fho = t.GetFailureHandlingOptions()
@@ -1245,6 +1343,19 @@ def try_once(doc, name, op, rng):
     except Exception as ex:
         t.RollBack()
         return None, unicode(ex)  # noqa: F821
+
+    moved, deleted = [], []
+    if check_side:
+        doc.Regenerate()
+        targets = set(r["id"] for r in recs if r.get("id") not in (None, u""))
+        moved, deleted = side_effects(doc, before, targets)
+        if moved and strict:
+            msg = u"會連帶移動其他構件（%s）" % u"；".join(
+                u"%s %s" % (describe(doc, k), how) for k, how in moved[:3])
+            t.RollBack()
+            print(u"%s：%s，改挑別的構件" % (name, msg))
+            return None, msg
+
     if t.Commit() != TransactionStatus.Committed:
         return None, u"；".join(pre.errors) or u"交易被回復"
     if pre.resolved:
@@ -1259,6 +1370,16 @@ def try_once(doc, name, op, rng):
                 counts.append([msg, 1])
         recs[0]["detail"] += u"（Revit 自動處理：%s）" % u"；".join(
             m if n == 1 else u"%s ×%d" % (m, n) for m, n in counts)
+
+    # 綜合題的連帶移動、以及所有變體的連帶刪除：記在答案表
+    extra = moved + deleted
+    if extra:
+        print(u"%s 連帶影響的構件：" % name)
+        for k, how in extra:
+            print(u"  %s：%s" % (describe(doc, k), how))
+        recs[0]["detail"] += u"（⚠ 連帶影響 %d 個其他構件：%s）" % (
+            len(extra), u"；".join(u"%s %s" % (describe(doc, k), how) for k, how in extra[:5]))
+        recs[0]["expect"] += u"（另有 %d 個連帶變動，批改可能多報）" % len(extra)
     return recs, None
 
 
@@ -1292,16 +1413,53 @@ def csv_cell(v):
     return s
 
 
+def parse_csv(text):
+    """簡單的 CSV 解析（支援引號、引號內的逗號與換行）。
+    不用 csv 模組：IronPython 2.7 的 csv 讀 unicode 會失敗，之前因此把舊答案表當成空的而覆蓋掉。"""
+    rows, row, cell, i, quoted = [], [], [], 0, False
+    while i < len(text):
+        ch = text[i]
+        if quoted:
+            if ch == u"\"":
+                if i + 1 < len(text) and text[i + 1] == u"\"":
+                    cell.append(u"\"")
+                    i += 1
+                else:
+                    quoted = False
+            else:
+                cell.append(ch)
+        elif ch == u"\"":
+            quoted = True
+        elif ch == u",":
+            row.append(u"".join(cell))
+            cell = []
+        elif ch == u"\n":
+            row.append(u"".join(cell))
+            rows.append(row)
+            row, cell = [], []
+        elif ch != u"\r":
+            cell.append(ch)
+        i += 1
+    if cell or row:
+        row.append(u"".join(cell))
+        rows.append(row)
+    return rows
+
+
 def read_manifest(path):
     """讀取既有答案表（沒有的話回傳空清單），去掉標題列。"""
     if not os.path.exists(path):
         return []
-    try:
-        with io.open(path, "r", encoding="utf-8-sig") as f:
-            data = list(csv.reader(f))
-        return [[c.lstrip(u"﻿") for c in r] for r in data[1:] if len(r) >= 10]
-    except Exception:
-        return []
+    with io.open(path, "r", encoding="utf-8") as f:
+        text = f.read().replace(u"\ufeff", u"")   # 舊版每一列開頭都有 BOM，一併去掉
+    return [r for r in parse_csv(text)[1:] if len(r) >= 10]
+
+
+def write_text_utf8_bom(path, text):
+    """一次寫入整份內容（Excel 需要開頭的 BOM 才會用 UTF-8 開啟）。
+    不用 utf-8-sig 逐行寫：IronPython 會在每一次 write 前面都加一個 BOM。"""
+    with io.open(path, "w", encoding="utf-8") as f:
+        f.write(u"\ufeff" + text)
 
 
 def write_category_stats(open_src, workshared, path):
@@ -1319,13 +1477,11 @@ def write_category_stats(open_src, workshared, path):
     finally:
         doc.Close(False)
 
-    with io.open(path, "w", encoding="utf-8-sig") as f:
-        f.write(u"模型類別,數量\n")
-        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
-            f.write(u"%s,%d\n" % (csv_cell(name), n))
-        f.write(u"\n錯誤種類代號,說明,可用構件數\n")
-        for k, label, n in kinds:
-            f.write(u"%s,%s,%d\n" % (k, csv_cell(label), n))
+    lines = [u"模型類別,數量"]
+    lines += [u"%s,%d" % (csv_cell(name), n) for name, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+    lines += [u"", u"錯誤種類代號,說明,可用構件數"]
+    lines += [u"%s,%s,%d" % (k, csv_cell(label), n) for k, label, n in kinds]
+    write_text_utf8_bom(path, u"\n".join(lines) + u"\n")
 
     output.print_md(u"### 標準模型類別統計")
     output.print_md(u"、".join(u"%s %d" % kv for kv in sorted(counts.items(), key=lambda kv: -kv[1])))
@@ -1333,12 +1489,11 @@ def write_category_stats(open_src, workshared, path):
 
 
 def write_manifest(path, rows):
+    # 「預期錯誤數」給批改工具自動驗證用：同一個檔名的各列加總，就是這個模型應該出現的錯誤數
     header = [u"檔名", u"錯誤說明", u"類別", u"元件ID", u"樓層", u"原X(mm)", u"原Y(mm)", u"原Z(mm)",
-              u"改動細節", u"預期批改結果"]
-    with io.open(path, "w", encoding="utf-8-sig") as f:
-        f.write(u",".join(header) + u"\n")
-        for r in rows:
-            f.write(u",".join(csv_cell(c) for c in r) + u"\n")
+              u"改動細節", u"預期批改結果", u"預期錯誤數"]
+    lines = [u",".join(header)] + [u",".join(csv_cell(c) for c in r) for r in rows]
+    write_text_utf8_bom(path, u"\n".join(lines) + u"\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1416,7 +1571,7 @@ def generate(todo, open_src, out_dir, base, workshared, rows, skipped):
                 for r in recs:
                     rows.append([os.path.basename(dst), name, r["cat"], r["id"], r["level"],
                                  u"%.0f" % r["x"], u"%.0f" % r["y"], u"%.0f" % r["z"],
-                                 r["detail"], r["expect"]])
+                                 r["detail"], r["expect"], unicode(r.get("n", 1))])  # noqa: F821
                 output.print_md(u"✅ **%s** — %s" % (name, u"；".join(r["detail"] for r in recs)))
             except SkipVariant as ex:
                 skipped.append((name, unicode(ex)))  # noqa: F821
