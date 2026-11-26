@@ -1615,6 +1615,15 @@ def main():
     forms.alert(msg)
 
 
+def student_file_name(base, name):
+    """測試學生的檔名：學號（標準模型學號的前段 + 變體編號加 1）+ XXX + 錯誤資訊（去掉編號）。
+    例如標準模型「B11105137 黃晴」、變體「04_柱位置偏移300」→「B11105005 XXX 柱位置偏移300」。"""
+    num, _, desc = name.partition(u"_")
+    sid = base.split()[0]
+    prefix = sid[:-3] if len(sid) > 3 and sid[-3:].isdigit() else sid
+    return u"%s%03d XXX %s" % (prefix, int(num) + 1, desc)
+
+
 def generate(todo, open_src, out_dir, base, workshared, rows, skipped):
     with forms.ProgressBar(title=u"產生錯誤模型 {value}/{max_value}", cancellable=True) as pb:
         for i, (name, op) in enumerate(todo):
@@ -1623,7 +1632,7 @@ def generate(todo, open_src, out_dir, base, workshared, rows, skipped):
             pb.update_progress(i, len(todo))
             # 每個變體用各自的種子（依名稱開頭的編號）：單獨重跑、或清單順序調整，都會得到同樣結果
             rng = random.Random(SEED + int(name.split(u"_")[0]))
-            dst = os.path.join(out_dir, u"%s %s.rvt" % (base, name))
+            dst = os.path.join(out_dir, student_file_name(base, name) + u".rvt")
             try:
                 recs = run_variant(open_src, dst, name, op, workshared, rng)
                 for r in recs:

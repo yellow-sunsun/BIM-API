@@ -154,9 +154,14 @@ namespace RevitGradingTool
             {
                 Dock = DockStyle.Top,
                 Height = 180,
-                Font = new System.Drawing.Font("Microsoft JhengHei", 10)
+                Font = new System.Drawing.Font("Microsoft JhengHei", 10),
+                DrawMode = DrawMode.OwnerDrawFixed,   // 自己畫三欄，中文字才會對齊
+                ItemHeight = 22
             };
             studentListBox.SelectedIndexChanged += StudentListBox_SelectedIndexChanged;
+            studentListBox.DrawItem += StudentListBox_DrawItem;
+            // 自己畫的清單在視窗縮放時只會重畫新露出的部分，縮窄時畫的「…」會殘留，所以整個重畫
+            studentListBox.Resize += (s, e) => studentListBox.Invalidate();
 
             errorCountLabel = new Label
             {
@@ -381,6 +386,64 @@ namespace RevitGradingTool
             return result;
         }
 
+        // 學生清單分三欄：學號 姓名、錯誤資訊、錯誤數。
+        // 檔名前兩段是學號和姓名，其餘是錯誤資訊（正式批改的檔名只有學號姓名，第二欄留空）
+        private class StudentRow
+        {
+            public readonly string[] Cols;
+
+            public StudentRow(string name, string count)
+            {
+                var parts = (name ?? "").Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                string id = parts.Length >= 2 ? parts[0] + " " + parts[1] : (name ?? "");
+                string info = parts.Length > 2 ? string.Join(" ", parts, 2, parts.Length - 2) : "";
+                Cols = new[] { id, info, count };
+            }
+
+            public override string ToString() => string.Join("  ", Cols);
+        }
+
+        private readonly int[] studentColX = { 2, 0, 0 };
+
+        // 每欄寬度依該欄最長的文字決定
+        private void ComputeStudentColumns()
+        {
+            const int GAP = 28;
+            var widths = new int[3];
+            foreach (var item in studentListBox.Items)
+            {
+                var row = item as StudentRow;
+                if (row == null) continue;
+                for (int c = 0; c < 3; c++)
+                    widths[c] = Math.Max(widths[c],
+                        TextRenderer.MeasureText(row.Cols[c], studentListBox.Font).Width);
+            }
+            studentColX[1] = studentColX[0] + widths[0] + GAP;
+            studentColX[2] = studentColX[1] + (widths[1] > 0 ? widths[1] + GAP : 0);
+            studentListBox.Invalidate();
+        }
+
+        private void StudentListBox_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            e.DrawBackground();
+            if (e.Index < 0 || e.Index >= studentListBox.Items.Count) return;
+            var row = studentListBox.Items[e.Index] as StudentRow;
+            if (row == null) return;
+
+            bool selected = (e.State & DrawItemState.Selected) != 0;
+            var color = selected ? System.Drawing.SystemColors.HighlightText : e.ForeColor;
+            for (int c = 0; c < 3; c++)
+            {
+                // 每欄只畫在自己的寬度內（到下一欄開頭為止），最後一欄畫到清單右邊
+                int right = c < 2 && studentColX[c + 1] > studentColX[c] ? studentColX[c + 1] : e.Bounds.Width;
+                var rect = new System.Drawing.Rectangle(
+                    e.Bounds.X + studentColX[c], e.Bounds.Y, Math.Max(0, right - studentColX[c]), e.Bounds.Height);
+                TextRenderer.DrawText(e.Graphics, row.Cols[c], e.Font, rect, color,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+            }
+            e.DrawFocusRectangle();
+        }
+
         private void RefreshStudentList()
         {
             int selected = studentListBox.SelectedIndex;
@@ -403,8 +466,9 @@ namespace RevitGradingTool
                     errors = errors.FindAll(e => e.Group == group);
                 Students[i].Errors = errors;
 
-                studentListBox.Items.Add($"{Students[i].Name}\u3000\u3000\u932f\u8aa4\uff1a{errors.Count} \u500b");
+                studentListBox.Items.Add(new StudentRow(Students[i].Name, $"\u932f\u8aa4\uff1a{errors.Count} \u500b"));
             }
+            ComputeStudentColumns();
 
             // 切換樓層或類別後保留原本選的學生，錯誤詳細會自動換成篩選後的結果
             if (selected >= 0 && selected < studentListBox.Items.Count)
@@ -436,7 +500,8 @@ namespace RevitGradingTool
                                                                     "[\u5c6c\u6027\u932f\u8aa4]";
                 string floor = string.IsNullOrEmpty(err.Level) ? "\u672a\u77e5" : err.Level;
                 errorTextStarts.Add(errorDetailBox.TextLength);
-                // 元件 ID：缺少只有標準模型的、多餘只有學生模型的，其他兩邊都有
+                // 元件 ID：缺少只有標準模型的、多餘只有學生模型的；
+                // 兩邊都有對應元件時一律列出兩個 ID（即使相同），並標明是哪一邊
                 string ids = err.Type == ErrorType.Missing ? $"\u6a19\u6e96 {err.StdElementId}" :
                              err.Type == ErrorType.Extra ? $"\u5b78\u751f {err.StuElementId}" :
                                                            $"\u6a19\u6e96 {err.StdElementId} \u2192 \u5b78\u751f {err.StuElementId}";
