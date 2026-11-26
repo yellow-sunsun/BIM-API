@@ -86,11 +86,14 @@ namespace RevitGradingTool
             _standardDoc = standardDoc;
             _standardManager = new HighlightManager(standardDoc, stdView);
             stdUi.GetOpenUIViews().FirstOrDefault(v => v.ViewId == stdView.Id)?.ZoomToFit();
-            _standardManager.Highlight(Errors, Standard);
             _shownErrors = Errors;
 
+            // 標準模型的標色放到學生模型開啟之後：學生多畫的構件，要從學生模型讀出它的形狀，才能在標準模型放同樣形狀的標記
             if (string.IsNullOrEmpty(StudentRvtPath))
+            {
+                _standardManager.Highlight(Errors, Standard);
                 return;
+            }
 
             try
             {
@@ -99,6 +102,7 @@ namespace RevitGradingTool
 
                 if (_studentDoc == null)
                 {
+                    _standardManager.Highlight(Errors, Standard);
                     TaskDialog.Show("\u932f\u8aa4", $"\u7121\u6cd5\u958b\u555f\uff1a{StudentRvtPath}");
                     return;
                 }
@@ -108,11 +112,15 @@ namespace RevitGradingTool
                 _stuView = stuView;
                 uiDoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == stuView.Id)?.ZoomToFit();
                 _studentManager = new HighlightManager(_studentDoc, stuView);
+                // 兩邊互相知道對方：缺少 / 多餘的構件從另一個模型讀取實際形狀來做標記
+                _studentManager.OtherDoc = standardDoc;
+                _standardManager.OtherDoc = _studentDoc;
                 _studentManager.HighlightStudent(Errors);
 
                 // 切換回標準模型讓它在左邊。Revit 切回時有時會再開一個標準模型的視窗，
                 // 只留下標準模型的 3D 視窗，並排後才會剛好是「標準 3D＋學生 3D」兩個
                 var stdUiBack = app.OpenAndActivateDocument(standardDoc.PathName);
+                _standardManager.Highlight(Errors, Standard);
                 LogWindows(app, "\u5207\u56de\u6a19\u6e96\u6a21\u578b\u5f8c\uff08API \u57f7\u884c\u4e2d\uff09");
                 KeepSingleWindow(stdUiBack, stdView);
                 KeepSingleWindow(new UIDocument(_studentDoc), stuView);

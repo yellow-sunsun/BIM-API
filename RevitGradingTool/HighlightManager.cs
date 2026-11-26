@@ -35,7 +35,18 @@ namespace RevitGradingTool
             _view = view ?? doc.ActiveView;
         }
 
+        // 標色顏色：紅＝缺少、藍＝多餘、黃＝位置偏移 / 旋轉錯誤、紫＝屬性錯誤
+        // （構件本身不透明；只在另一個模型有的構件，放同形狀的半透明標記）
+        private static readonly Color MissingColor = new Color(255, 0, 0);
+        private static readonly Color ExtraColor = new Color(0, 112, 255);
+        private static readonly Color MoveColor = new Color(255, 255, 0);
+        private static readonly Color AttrColor = new Color(160, 32, 240);
+        private const int MARKER_TRANSPARENCY = 70;   // 同形狀標記的透明度（0＝不透明、100＝全透明）
+
         public Document Doc => _doc;
+
+        // 另一個模型（標準模型的另一個是學生模型，反之亦然）：缺少或多餘的構件從這裡讀取實際形狀
+        public Document OtherDoc { get; set; }
 
         // 合併的錯誤（例如一起被移動的牆和門）：組裡每個構件都要標色
         private static IEnumerable<CompareError> WithRelated(List<CompareError> errors)
@@ -117,7 +128,8 @@ namespace RevitGradingTool
                 {
                     XYZ position = new XYZ(err.X * MM, err.Y * MM, err.Z * MM);
                     if (err.Type == ErrorType.Extra)
-                        AddMarker(err, position, "\u2b06 \u591a\u9918\u69cb\u4ef6", new Color(160, 32, 240));
+                        AddMarker(err, position, "\u2b06 \u591a\u9918\u69cb\u4ef6", ExtraColor, err.StuElementId,
+                            new XYZ(err.X - err.RawStudentX, err.Y - err.RawStudentY, err.Z - err.RawStudentZ));
                     else
                         ApplyColor(err, position, err.StdElementId);
                 }
@@ -137,7 +149,8 @@ namespace RevitGradingTool
                 {
                     XYZ position = new XYZ(err.RawStudentX * MM, err.RawStudentY * MM, err.RawStudentZ * MM);
                     if (err.Type == ErrorType.Missing)
-                        AddMarker(err, position, "\u2b07 \u6b64\u8655\u7f3a\u5c11\u69cb\u4ef6", new Color(255, 0, 0));
+                        AddMarker(err, position, "\u2b07 \u6b64\u8655\u7f3a\u5c11\u69cb\u4ef6", MissingColor, err.StdElementId,
+                            new XYZ(err.RawStudentX - err.X, err.RawStudentY - err.Y, err.RawStudentZ - err.Z));
                     else
                         ApplyColor(err, position, err.StuElementId);
                 }
@@ -222,31 +235,53 @@ namespace RevitGradingTool
                 uiDoc.Selection.SetElementIds(new List<ElementId> { id });
         }
 
-        // 在 3D 視圖放一個半透明方塊當標記（3D 視圖不能放文字註記）；平面圖則放文字
-        private void AddMarker(CompareError err, XYZ position, string label, Color color)
+        // 構件只在另一個模型裡有（學生缺少的、學生多畫的）：在這個模型放一個「長得跟那個構件一樣」的半透明標記。
+        //   1. 從另一個模型讀出那個構件的實體，平移到這個模型對應的位置（shiftMm：兩個模型之間的偏移）
+        //   2. 讀不到或 Revit 不接受那個形狀：用那個構件的外框（長寬高相同的方塊）
+        //   3. 找不到那個構件：用 800mm 的方塊
+        // 3D 視圖不能放文字註記；平面圖則放文字
+        private void AddMarker(CompareError err, XYZ position, string label, Color color, long sourceId, XYZ shiftMm)
         {
             ElementId id;
+            string how;
             if (_view is View3D)
             {
-                double half = 400 * MM;
-                var p0 = new XYZ(position.X - half, position.Y - half, position.Z - half);
-                var loop = new CurveLoop();
-                loop.Append(Line.CreateBound(p0, p0 + new XYZ(2 * half, 0, 0)));
-                loop.Append(Line.CreateBound(p0 + new XYZ(2 * half, 0, 0), p0 + new XYZ(2 * half, 2 * half, 0)));
-                loop.Append(Line.CreateBound(p0 + new XYZ(2 * half, 2 * half, 0), p0 + new XYZ(0, 2 * half, 0)));
-                loop.Append(Line.CreateBound(p0 + new XYZ(0, 2 * half, 0), p0));
-                var solid = GeometryCreationUtilities.CreateExtrusionGeometry(
-                    new List<CurveLoop> { loop }, XYZ.BasisZ, 2 * half);
+                Element src = (OtherDoc != null && OtherDoc.IsValidObject && sourceId != 0)
+                    ? OtherDoc.GetElement(new ElementId(sourceId)) : null;
+                var move = Transform.CreateTranslation(new XYZ(shiftMm.X * MM, shiftMm.Y * MM, shiftMm.Z * MM));
 
-                var ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
-                ds.SetShape(new GeometryObject[] { solid });
+                DirectShape ds = null;
+                how = "\u5be6\u969b\u5f62\u72c0";
+                if (src != null)
+                {
+                    var solids = CollectSolids(src).Select(s => (GeometryObject)SolidUtils.CreateTransformed(s, move)).ToList();
+                    if (solids.Count > 0) ds = TryCreateShape(solids);
+                    if (ds == null)
+                    {
+                        how = "\u5916\u6846\u65b9\u584a";
+                        var bb = src.get_BoundingBox(null);
+                        if (bb != null)
+                            ds = TryCreateShape(new List<GeometryObject> { BoxSolid(move.OfPoint(bb.Min), move.OfPoint(bb.Max)) });
+                    }
+                }
+                if (ds == null)
+                {
+                    how = "\u9810\u8a2d\u65b9\u584a";
+                    double half = 400 * MM;
+                    ds = TryCreateShape(new List<GeometryObject>
+                    {
+                        BoxSolid(position - new XYZ(half, half, half), position + new XYZ(half, half, half))
+                    });
+                }
+
                 ds.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.Set(label);
                 id = ds.Id;
-
-                _view.SetElementOverrides(id, ColorOverride(color, 30));
+                // 標記是「這裡應該有 / 多了一個」的提示，要比實體淡很多才分得出來：填色 70% 透明，邊線維持原色
+                _view.SetElementOverrides(id, ColorOverride(color, MARKER_TRANSPARENCY));
             }
             else
             {
+                how = "\u6587\u5b57";
                 var options = new TextNoteOptions
                 {
                     HorizontalAlignment = HorizontalTextAlignment.Center,
@@ -256,7 +291,67 @@ namespace RevitGradingTool
             }
             _markerIds.Add(id);
             _errorElements[err] = id;
-            HighlightEvent.Log($"  [{_doc.Title}] \u653e\u6a19\u8a18\u65b9\u584a {err.Type} {err.Category} {err.FamilyType} \u2192 \u5143\u4ef6 {id}");
+            HighlightEvent.Log($"  [{_doc.Title}] \u653e\u6a19\u8a18\uff08{how}\uff09{err.Type} {err.Category} {err.FamilyType} \u2192 \u5143\u4ef6 {id}");
+        }
+
+        // 建立標記用的 DirectShape；Revit 不接受這個形狀時回傳 null（不留下空的元件）
+        private DirectShape TryCreateShape(IList<GeometryObject> shape)
+        {
+            DirectShape ds = null;
+            try
+            {
+                ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                ds.SetShape(shape);
+                return ds;
+            }
+            catch
+            {
+                if (ds != null && ds.IsValidObject) _doc.Delete(ds.Id);
+                return null;
+            }
+        }
+
+        // 構件的所有實體（族群的幾何包在 GeometryInstance 裡，一層層展開，取得模型座標的實體）
+        private static List<Solid> CollectSolids(Element el)
+        {
+            var result = new List<Solid>();
+            var geo = el.get_Geometry(new Options { ComputeReferences = false, DetailLevel = ViewDetailLevel.Fine });
+            if (geo != null) Collect(geo, result);
+            return result;
+        }
+
+        private static void Collect(GeometryElement geo, List<Solid> result)
+        {
+            foreach (GeometryObject obj in geo)
+            {
+                if (obj is Solid s && s.Volume > 1e-9 && s.Faces.Size > 0)
+                    result.Add(s);
+                else if (obj is GeometryInstance gi)
+                {
+                    var inner = gi.GetInstanceGeometry();
+                    if (inner != null) Collect(inner, result);
+                }
+            }
+        }
+
+        // 兩個角點之間的方塊實體（太薄的方向至少 10mm）
+        private static Solid BoxSolid(XYZ a, XYZ b)
+        {
+            double minLen = 10 * MM;
+            XYZ min = new XYZ(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z));
+            XYZ max = new XYZ(Math.Max(Math.Max(a.X, b.X), min.X + minLen),
+                              Math.Max(Math.Max(a.Y, b.Y), min.Y + minLen),
+                              Math.Max(Math.Max(a.Z, b.Z), min.Z + minLen));
+            var p0 = new XYZ(min.X, min.Y, min.Z);
+            var p1 = new XYZ(max.X, min.Y, min.Z);
+            var p2 = new XYZ(max.X, max.Y, min.Z);
+            var p3 = new XYZ(min.X, max.Y, min.Z);
+            var loop = new CurveLoop();
+            loop.Append(Line.CreateBound(p0, p1));
+            loop.Append(Line.CreateBound(p1, p2));
+            loop.Append(Line.CreateBound(p2, p3));
+            loop.Append(Line.CreateBound(p3, p0));
+            return GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { loop }, XYZ.BasisZ, max.Z - min.Z);
         }
 
         private void ApplyColor(CompareError err, XYZ position, long elementId)
@@ -271,9 +366,10 @@ namespace RevitGradingTool
                 return;
             }
 
-            Color color = err.Type == ErrorType.Missing || err.Type == ErrorType.Extra ? new Color(255, 0, 0)
-                        : err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition ? new Color(255, 255, 0)
-                        : new Color(255, 140, 0);
+            Color color = err.Type == ErrorType.Missing ? MissingColor
+                        : err.Type == ErrorType.Extra ? ExtraColor
+                        : err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition ? MoveColor
+                        : AttrColor;
             _view.SetElementOverrides(bestEl.Id, ColorOverride(color, 0));
             _highlightedIds.Add(bestEl.Id);
             _errorElements[err] = bestEl.Id;
