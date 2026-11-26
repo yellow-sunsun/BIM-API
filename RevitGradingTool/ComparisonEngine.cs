@@ -85,15 +85,26 @@ namespace RevitGradingTool
             //   3. 任何類型（類型錯誤）
             // 若逐一處理，被移走的牆會先搶走旁邊別的牆（另一種女兒牆、或垂直相接被拉長的同類型牆），
             // 一個錯誤會變成好幾個
+            // 每一輪內，先配沒有依附主體的構件（樓梯、牆…），再配依附在主體上的（扶手、門窗…）：
+            // 依附構件有好幾個一樣近的候選時（例如整座樓梯原地重複建立，兩座樓梯各帶一支一樣的扶手），
+            // 優先選「主體跟標準模型配到同一個」的那個，扶手才會跟著它的樓梯配，結果不受建模順序影響
             var matchOf = new int[filteredStd.Elements.Count];
             for (int i = 0; i < matchOf.Length; i++) matchOf[i] = -1;
+            var stuIdOfStd = new Dictionary<long, long>();   // 標準模型元件 Id → 配到的學生元件 Id
             for (int pass = 0; pass < 3; pass++)
             {
-                for (int i = 0; i < matchOf.Length; i++)
+                foreach (bool hostedRound in new[] { false, true })
                 {
-                    if (matchOf[i] >= 0) continue;
-                    matchOf[i] = FindClosest(filteredStd.Elements[i], correctedStudent.Elements, matched, pass);
-                    if (matchOf[i] >= 0) matched.Add(matchOf[i]);
+                    for (int i = 0; i < matchOf.Length; i++)
+                    {
+                        var t = filteredStd.Elements[i];
+                        if (matchOf[i] >= 0 || (t.HostId != 0) != hostedRound) continue;
+                        long preferHost = t.HostId != 0 && stuIdOfStd.TryGetValue(t.HostId, out var h) ? h : 0;
+                        matchOf[i] = FindClosest(t, correctedStudent.Elements, matched, pass, preferHost);
+                        if (matchOf[i] < 0) continue;
+                        matched.Add(matchOf[i]);
+                        if (!stuIdOfStd.ContainsKey(t.Id)) stuIdOfStd[t.Id] = correctedStudent.Elements[matchOf[i]].Id;
+                    }
                 }
             }
 
@@ -875,11 +886,14 @@ namespace RevitGradingTool
             !(a.IsLinear && b.IsLinear) || RotationDiff(a, b) <= 5.0;
 
         // pass 0：同類型且同方向；pass 1：同類型；pass 2：不限類型
-        private int FindClosest(ElementSnapshot target, List<ElementSnapshot> candidates, HashSet<int> used, int pass)
+        // preferHostId：依附構件優先選「主體是這個學生元件」的候選（0 = 不指定）
+        private int FindClosest(ElementSnapshot target, List<ElementSnapshot> candidates, HashSet<int> used, int pass,
+            long preferHostId = 0)
         {
             bool sameTypeOnly = pass <= 1;
             int bestIdx = -1;
             double bestDist = double.MaxValue;
+            bool bestHostMatch = false;
             string key = KeyOf(target);
             double tolerance = GetTolerance(key);
 
@@ -913,12 +927,15 @@ namespace RevitGradingTool
                     if (xyDist > tolerance) continue;
                     dist = Math.Sqrt(xyDist * xyDist + zDist * zDist);
                 }
-                if (dist < bestDist)
+                bool hostMatch = preferHostId != 0 && c.HostId == preferHostId;
+                if ((hostMatch && !bestHostMatch) || (hostMatch == bestHostMatch && dist < bestDist))
                 {
                     bestDist = dist;
                     bestIdx = i;
+                    bestHostMatch = hostMatch;
                 }
             }
+
 
             return bestIdx;
         }
