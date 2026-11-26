@@ -66,6 +66,7 @@
     <Compile Include="HighlightManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Snapshot.cs" />
+    <Compile Include="SnapshotCache.cs" />
     <Compile Include="TaPanel.cs" />
     <Compile Include="TaPanelCommand.cs" />
     <Compile Include="Validation.cs" />

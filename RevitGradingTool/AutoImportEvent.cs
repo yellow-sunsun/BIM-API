@@ -82,11 +82,24 @@ namespace RevitGradingTool
             {
                 string path = rvtFiles[i];
                 string name = Path.GetFileNameWithoutExtension(path);
-                Panel.ShowProgress($"轉換中 {i + 1}/{rvtFiles.Count}：{name}");
-
                 // 已經開著的檔案（例如上次標色開的學生模型）不要幫使用者關掉
                 bool wasOpen = app.Application.Documents.Cast<Document>()
                     .Any(d => SamePath(d.PathName, path));
+
+                // 檔案沒變過就直接用上次轉好的快照，不用再開 Revit 檔
+                // （開著的檔案可能有未存檔的修改，照舊從文件讀）
+                if (!wasOpen)
+                {
+                    var cached = SnapshotCache.TryLoad(path);
+                    if (cached != null)
+                    {
+                        Panel.ShowProgress($"讀取快取 {i + 1}/{rvtFiles.Count}：{name}");
+                        results.Add(new StudentResult { Name = name, RvtPath = path, Snapshot = cached });
+                        continue;
+                    }
+                }
+
+                Panel.ShowProgress($"轉換中 {i + 1}/{rvtFiles.Count}：{name}");
 
                 Document doc = null;
                 try
@@ -98,11 +111,14 @@ namespace RevitGradingTool
                     doc = app.Application.OpenDocumentFile(
                         ModelPathUtils.ConvertUserVisiblePathToModelPath(path), openOptions);
 
+                    var snapshot = ExportSnapshot.ParseDocument(doc);
+                    if (!wasOpen) SnapshotCache.Save(path, snapshot);
+
                     results.Add(new StudentResult
                     {
                         Name = name,
                         RvtPath = path,
-                        Snapshot = ExportSnapshot.ParseDocument(doc)
+                        Snapshot = snapshot
                     });
                 }
                 catch (Exception ex)
