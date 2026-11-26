@@ -436,9 +436,12 @@ namespace RevitGradingTool
                                                                     "[\u5c6c\u6027\u932f\u8aa4]";
                 string floor = string.IsNullOrEmpty(err.Level) ? "\u672a\u77e5" : err.Level;
                 errorTextStarts.Add(errorDetailBox.TextLength);
-                errorDetailBox.AppendText($"{i + 1}. {icon} {err.Category}\u3000\u6a13\u5c64\uff1a{floor}\n");
-                errorDetailBox.AppendText($"  {err.Detail}\n");
-                errorDetailBox.AppendText($"  \u4f4d\u7f6e\uff1aX={err.X:F0}, Y={err.Y:F0}, Z={err.Z:F0}\n\n");
+                // じン IDぶΤ夹非家緇Τ厩ネ家ㄤㄢ娩常Τ
+                string ids = err.Type == ErrorType.Missing ? $"\u6a19\u6e96 {err.StdElementId}" :
+                             err.Type == ErrorType.Extra ? $"\u5b78\u751f {err.StuElementId}" :
+                                                           $"\u6a19\u6e96 {err.StdElementId} \u2192 \u5b78\u751f {err.StuElementId}";
+                errorDetailBox.AppendText($"{i + 1}. {icon} {err.Category}\u3000\u6a13\u5c64\uff1a{floor}\u3000\u5143\u4ef6ID\uff1a{ids}\n");
+                errorDetailBox.AppendText($"  {err.Detail}\n\n");
             }
             errorTextStarts.Add(errorDetailBox.TextLength);
             MarkCurrentError();
