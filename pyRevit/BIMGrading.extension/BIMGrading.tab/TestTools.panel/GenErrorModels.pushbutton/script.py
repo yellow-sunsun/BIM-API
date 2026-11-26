@@ -239,25 +239,32 @@ def is_stairs(e):
 
 
 def stair_railings(doc, st):
-    """樓梯的扶手。有些模型的 GetAssociatedRailings() 是空的（扶手是另外畫的），
-    所以再加上「主體是這座樓梯」以及「位置和樓梯重疊」的欄杆。"""
+    """樓梯的扶手，判斷方式跟批改工具相同：
+    扶手有記錄主體（HostId）就看主體；沒有記錄的，歸給「中心距離最近、而且在 3m 內」的那座樓梯。
+    （之前用外框重疊判斷，上下疊在一起的兩座樓梯會把別座的扶手也算進來）"""
+    stairs = [s for s in FilteredElementCollector(doc).OfClass(Stairs)]
+
+    def nearest_stair(r):
+        best, best_d = None, None
+        rc = center_xyz(r)
+        for s in stairs:
+            d = center_xyz(s).DistanceTo(rc) / MM
+            if d < 3000 and (best is None or d < best_d):
+                best, best_d = s, d
+        return best
+
     found = {}
     for i in st.GetAssociatedRailings():
         found[eid(doc.GetElement(i))] = doc.GetElement(i)
-    bb = st.get_BoundingBox(None)
-    pad = 300 * MM
     for r in FilteredElementCollector(doc).OfClass(Railing):
         if r.GroupId != ElementId.InvalidElementId or r.Pinned:
             continue
         if r.HostId == st.Id:
             found[eid(r)] = r
-            continue
-        rb = r.get_BoundingBox(None)
-        if bb is not None and rb is not None and r.HostId == ElementId.InvalidElementId and \
-                rb.Min.X < bb.Max.X + pad and rb.Max.X > bb.Min.X - pad and \
-                rb.Min.Y < bb.Max.Y + pad and rb.Max.Y > bb.Min.Y - pad and \
-                rb.Min.Z < bb.Max.Z + pad and rb.Max.Z > bb.Min.Z - pad:
-            found[eid(r)] = r
+        elif r.HostId == ElementId.InvalidElementId:
+            s = nearest_stair(r)
+            if s is not None and s.Id == st.Id:
+                found[eid(r)] = r
     return [found[k] for k in sorted(found)]
 
 
@@ -1030,6 +1037,9 @@ def op_delete_stair_railings(one_side):
         recs = [record(doc, "stair_railing", r,
                        (u"只留單側扶手：刪除其中一側（類型 %s）" if one_side else u"整座樓梯的扶手都刪除（類型 %s）")
                        % type_name(doc, r), u"缺少 1") for r in targets]
+        # 同一座樓梯的扶手全部刪掉：批改算 1 個錯誤（只有第一筆計入預期錯誤數，其他列只是說明）
+        for r in recs[1:]:
+            r["n"] = 0
         doc.Delete(List[ElementId]([r.Id for r in targets]))
         return recs
     return run
@@ -1091,7 +1101,8 @@ RANDOM_EXCLUDE = (u"00_", u"15_", u"21_", u"26_", u"27_", u"39_", u"54_", u"55_"
 
 def op_random_combo(count):
     """從結構與元件的錯誤種類中隨機抽 count 個，套用在同一個模型上。
-    每個錯誤包在 SubTransaction 裡：做不出來的只回復那一個，再抽下一個，直到湊滿 count 個。"""
+    每個錯誤包在 SubTransaction 裡：做不出來的、或會連帶移動其他構件的（例如刪樓板讓站在上面的牆跑掉），
+    只回復那一個，再抽下一個，直到湊滿 count 個——答案表寫幾個錯誤，模型就只有幾個地方不同。"""
     def run(doc, rng):
         pool = [(n, op) for n, op in VARIANTS if not n.startswith(RANDOM_EXCLUDE)]
         rng.shuffle(pool)
@@ -1099,14 +1110,23 @@ def op_random_combo(count):
         for name, op in pool:
             if done >= count:
                 break
+            before = compared_positions(doc)
             sub = SubTransaction(doc)
             sub.Start()
             try:
                 got = op(doc, rng)
                 doc.Regenerate()
+                targets = set(r["id"] for r in got if r.get("id") not in (None, u""))
+                moved, _ = side_effects(doc, before, targets)
+                if moved:
+                    print(u"%s 的 [%s]：會連帶移動其他構件（%s），改抽別的錯誤" % (
+                        u"綜合題", name, u"；".join(u"%s %s" % (describe(doc, k), how) for k, how in moved[:3])))
+                    sub.RollBack()
+                    continue
                 sub.Commit()
             except Exception:
-                sub.RollBack()
+                if sub.HasStarted() and not sub.HasEnded():
+                    sub.RollBack()
                 continue
             for r in got:
                 r["detail"] = u"[%s] %s" % (name, r["detail"])
@@ -1296,12 +1316,33 @@ def host_eid(e):
     return None
 
 
+def attached_to(e, points):
+    """線型構件（梁）的端點是否接在這些位置附近（水平 1m 內、高度差 4m 內）——
+    跟批改工具判斷「柱錯了、接在柱上的梁跟著動，算同一個錯誤」的規則相同。"""
+    loc = e.Location
+    if not points or not isinstance(loc, LocationCurve):
+        return False
+    for p in (loc.Curve.GetEndPoint(0), loc.Curve.GetEndPoint(1)):
+        px, py, pz = p.X / MM, p.Y / MM, p.Z / MM
+        for (tx, ty, tz) in points:
+            if ((px - tx) ** 2 + (py - ty) ** 2) ** 0.5 < 1000 and abs(pz - tz) < 4000:
+                return True
+    return False
+
+
 def side_effects(doc, before, target_ids):
+
     """修改後，除了這個錯誤本身要改的構件以外，還有哪些構件被連帶移動或刪除
     （超過批改的容許誤差、會被多報錯的才算）。依附在被修改構件上的（例如樓梯的扶手）不算。
     回傳 (被移動的, 被刪除的)。"""
     after = compared_positions(doc)
     moved, deleted = [], []
+    # 被修改的柱原本的位置：接在柱上的梁（端點在 1m 內）跟著動是必然的，批改工具會算在柱的錯誤裡
+    def is_column(t):
+        te = doc.GetElement(ElementId(t))
+        return te is not None and te.Category is not None and \
+            te.Category.Id == ElementId(BuiltInCategory.OST_StructuralColumns)
+    target_pts = [before[t] for t in target_ids if t in before and is_column(t)]
     for k, (x0, y0, z0) in before.items():
         if k in target_ids:
             continue
@@ -1309,17 +1350,34 @@ def side_effects(doc, before, target_ids):
             deleted.append((k, u"被刪除"))
             continue
         e = doc.GetElement(ElementId(k))
-        if e is None or host_eid(e) in target_ids:
+        if e is None or host_eid(e) in target_ids or attached_to(e, target_pts):
             continue
         x1, y1, z1 = after[k]
-        d = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
-        if d > compare_tolerance_mm(e):
+        dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+        tol = compare_tolerance_mm(e)
+        loc = e.Location
+        if isinstance(loc, LocationCurve):
+            # 線型構件（梁、牆）：沿著自己方向的偏移只是長度改變，跟批改工具一樣不算；只看側向偏移
+            p0, p1 = loc.Curve.GetEndPoint(0), loc.Curve.GetEndPoint(1)
+            ux, uy = p1.X - p0.X, p1.Y - p0.Y
+            length = (ux * ux + uy * uy) ** 0.5
+            if length > 1e-6:
+                ux, uy = ux / length, uy / length
+                along = abs(dx * ux + dy * uy)
+                perp = abs(dx * uy - dy * ux)
+                if perp > tol or abs(dz) > tol or along > max(tol, min(1000.0, 0.4 * length / MM)):
+                    moved.append((k, u"移動 %.0f mm" % ((dx * dx + dy * dy + dz * dz) ** 0.5)))
+                continue
+        d = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if d > tol:
             moved.append((k, u"移動 %.0f mm" % d))
     return moved, deleted
 
 
-# 綜合題本來就會改很多構件，連帶影響只記錄、不重試；其他變體一律要求「只改到要改的構件」
-COMBO_PREFIXES = (u"26_", u"27_", u"39_", u"61_", u"62_", u"63_", u"64_")
+# 整棟偏移本來就會移動所有構件，不檢查；其他變體（包括綜合題）一律要求「只改到要改的構件」，
+# 有連帶移動就回復、換別的構件或別的錯誤重試
+COMBO_PREFIXES = (u"26_",)
+
 
 
 def try_once(doc, name, op, rng):

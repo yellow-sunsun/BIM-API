@@ -190,7 +190,11 @@ namespace RevitGradingTool
             }
             else if (el.Location is LocationCurve lc)
             {
+                XYZ p0 = lc.Curve.GetEndPoint(0), p1 = lc.Curve.GetEndPoint(1);
+                snap.StartX = p0.X * FT_TO_MM; snap.StartY = p0.Y * FT_TO_MM; snap.StartZ = p0.Z * FT_TO_MM;
+                snap.EndX = p1.X * FT_TO_MM; snap.EndY = p1.Y * FT_TO_MM; snap.EndZ = p1.Z * FT_TO_MM;
                 XYZ mid = (lc.Curve.GetEndPoint(0) + lc.Curve.GetEndPoint(1)) / 2;
+
                 snap.X = mid.X * FT_TO_MM;
                 snap.Y = mid.Y * FT_TO_MM;
                 snap.Z = mid.Z * FT_TO_MM;
@@ -284,6 +288,12 @@ namespace RevitGradingTool
             {
                 if (doc.GetElement(el.GetTypeId()) is RailingType rt)
                     snap.Nums["\u6276\u624b\u9ad8\u5ea6"] = Math.Round(rt.TopRailHeight * FT_TO_MM, 1);
+                var bb = el.get_BoundingBox(null);
+                if (bb != null)
+                {
+                    snap.BoxMinX = bb.Min.X * FT_TO_MM; snap.BoxMinY = bb.Min.Y * FT_TO_MM; snap.BoxMinZ = bb.Min.Z * FT_TO_MM;
+                    snap.BoxMaxX = bb.Max.X * FT_TO_MM; snap.BoxMaxY = bb.Max.Y * FT_TO_MM; snap.BoxMaxZ = bb.Max.Z * FT_TO_MM;
+                }
             }
         }
 

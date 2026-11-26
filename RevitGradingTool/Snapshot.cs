@@ -21,7 +21,21 @@ namespace RevitGradingTool
         public double Rotation { get; set; }
         public bool IsLinear { get; set; }        // 線型構件（牆、梁、管線…）：畫的方向相反不算錯，旋轉角只比到 180°
         public string Level { get; set; }         // 構件所在樓層
-        public long HostId { get; set; }          // 依附的主體元件 Id（門窗→牆、樓梯扶手→樓梯）；0 = 沒有依附
+        public long HostId { get; set; }
+        // 線型構件（牆、梁、管線）的兩個端點（mm）：判斷「只是長度變了」或「端點接在哪根柱上」用
+        public double StartX { get; set; }
+        public double StartY { get; set; }
+        public double StartZ { get; set; }
+        public double EndX { get; set; }
+        public double EndY { get; set; }
+        public double EndZ { get; set; }
+        // 外框（mm，目前只記錄欄杆扶手）：判斷同一座樓梯少掉的扶手是不是連在一起的
+        public double BoxMinX { get; set; }
+        public double BoxMinY { get; set; }
+        public double BoxMinZ { get; set; }
+        public double BoxMaxX { get; set; }
+        public double BoxMaxY { get; set; }
+        public double BoxMaxZ { get; set; }          // 依附的主體元件 Id（門窗→牆、樓梯扶手→樓梯）；0 = 沒有依附
 
         // 需要比對的參數（例如樓梯的級高、級深、階數；牆高；門的翻轉）
         public Dictionary<string, double> Nums { get; set; } = new Dictionary<string, double>();   // 數值（mm 或個數）

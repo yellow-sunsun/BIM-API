@@ -71,7 +71,12 @@ namespace RevitGradingTool
             var filteredStd = new ModelSnapshot { ModelName = standard.ModelName, Elements = stdElements };
             var filteredStu = new ModelSnapshot { ModelName = student.ModelName, Elements = stuElements };
 
+            var stdById = new Dictionary<long, ElementSnapshot>();
+            foreach (var el in filteredStd.Elements)
+                if (!stdById.ContainsKey(el.Id)) stdById[el.Id] = el;
+
             XYZOffset offset = CalcOffset(filteredStd, filteredStu);
+
             ModelSnapshot correctedStudent = ApplyOffset(filteredStu, offset);
 
             // 配對分三輪，每一輪對全部構件做完才進下一輪：
@@ -223,7 +228,18 @@ namespace RevitGradingTool
                         Math.Pow(extra.Y - missing.Y, 2) +
                         Math.Pow(extra.Z - missing.Z, 2));
 
-                    if (dist < radius)
+                    // 線型構件（梁、牆）畫短或畫長：中點沿軸移動很多，但仍在同一直線上、彼此重疊 → 也是同一個構件
+                    bool sameLine = false;
+                    if (stdById.TryGetValue(missing.StdElementId, out var ms) &&
+                        TryAxis(ms, out double ax, out double ay, out double alen) &&
+                        extra.FamilyType == missing.FamilyType)
+                    {
+                        double ddx = extra.X - missing.X, ddy = extra.Y - missing.Y;
+                        sameLine = Math.Abs(ddx * ay - ddy * ax) < 500.0 && Math.Abs(extra.Z - missing.Z) < 500.0 &&
+                                   Math.Abs(ddx * ax + ddy * ay) < alen;
+                    }
+
+                    if (dist < radius || sameLine)
                     {
                         toRemove.Add(missing);
                         toRemove.Add(extra);
@@ -243,6 +259,7 @@ namespace RevitGradingTool
                             RawStudentX = extra.RawStudentX,
                             RawStudentY = extra.RawStudentY,
                             RawStudentZ = extra.RawStudentZ,
+                            HostId = missing.HostId,
                             CategoryKey = missing.CategoryKey,
                             FamilyName = missing.FamilyName,
                             FamilyType = missing.FamilyType,
@@ -257,8 +274,164 @@ namespace RevitGradingTool
             foreach (var r in toRemove) errors.Remove(r);
             errors.AddRange(toAdd);
 
-            return MergeTypeEdits(MergeGroupMoves(MergeHostedParts(errors)));
+            var stuById = new Dictionary<long, ElementSnapshot>();
+            foreach (var el in filteredStu.Elements)
+                if (!stuById.ContainsKey(el.Id)) stuById[el.Id] = el;
+
+            var merged = MergeHostedParts(errors);
+            merged = MergeStairRailings(merged, ErrorType.Missing, stdById, filteredStd.Elements);
+            merged = MergeStairRailings(merged, ErrorType.Extra, stuById, filteredStu.Elements);
+            return MergeTypeEdits(MergeColumnDrag(MergeGroupMoves(MergeDependents(merged)), stdById));
         }
+
+        // 同一座樓梯（樓梯本身還在）少掉的扶手：
+        //   - 這座樓梯的扶手全部沒畫 → 1 個錯誤
+        //   - 只少了一部分 → 連在一起的（外框相接、間距 30cm 內）算 1 個，不連續的分開算
+        // 多畫的扶手也一樣：同一座樓梯、連在一起的多餘扶手算 1 個
+        private static List<CompareError> MergeStairRailings(List<CompareError> errors, ErrorType type,
+            Dictionary<long, ElementSnapshot> byId, List<ElementSnapshot> model)
+        {
+            Func<CompareError, long> idOf = e => type == ErrorType.Missing ? e.StdElementId : e.StuElementId;
+            var rails = errors.Where(e => e.Type == type && KeyOf(e) == "OST_StairsRailing" && byId.ContainsKey(idOf(e))).ToList();
+            if (rails.Count < 2) return errors;
+
+            var stairs = model.Where(e => KeyOf(e) == "OST_Stairs").ToList();
+            long StairOf(ElementSnapshot r)
+            {
+                if (r.HostId != 0 && byId.TryGetValue(r.HostId, out var h) && KeyOf(h) == "OST_Stairs") return h.Id;
+                var near = stairs.OrderBy(s => D(s, r)).FirstOrDefault(s => D(s, r) < 3000.0);
+                return near?.Id ?? 0;
+            }
+
+            var result = new List<CompareError>(errors);
+            foreach (var g in rails.GroupBy(e => StairOf(byId[idOf(e)])).Where(g => g.Key != 0 && g.Count() > 1))
+            {
+                var members = g.ToList();
+                int stairRailCount = model.Count(e => KeyOf(e) == "OST_StairsRailing" && StairOf(e) == g.Key);
+                bool allMissing = type == ErrorType.Missing && members.Count >= stairRailCount;
+
+                // 分組：全部沒畫就一組；否則依外框是否相接分成幾段連續的
+                var parent = Enumerable.Range(0, members.Count).ToArray();
+                int Root(int a) { while (parent[a] != a) a = parent[a] = parent[parent[a]]; return a; }
+                for (int i = 0; i < members.Count; i++)
+                    for (int j = i + 1; j < members.Count; j++)
+                        if (allMissing || BoxesTouch(byId[idOf(members[i])], byId[idOf(members[j])], 300.0))
+                            parent[Root(i)] = Root(j);
+
+                foreach (var comp in Enumerable.Range(0, members.Count).GroupBy(Root).Where(c => c.Count() > 1))
+                {
+                    var list = comp.Select(i => members[i]).ToList();
+                    var leader = list[0];
+                    leader.Related.AddRange(list.Skip(1));
+                    foreach (var e in list.Skip(1)) result.Remove(e);
+                    string what = type == ErrorType.Missing ? "\u5c11\u4e86" : "\u591a\u756b\u4e86";
+                    leader.Detail += allMissing
+                        ? $"\uff08\u9019\u5ea7\u6a13\u68af\u7684\u6276\u624b\u5168\u90e8\u6c92\u756b\uff0c\u5171 {list.Count} \u652f\uff0c\u7b97 1 \u500b\u932f\u8aa4\uff09"
+                        : $"\uff08\u540c\u4e00\u5ea7\u6a13\u68af\u9023\u7e8c{what} {list.Count} \u652f\u6276\u624b\uff0c\u7b97 1 \u500b\u932f\u8aa4\uff09";
+                }
+            }
+            return result;
+        }
+
+        private static double D(ElementSnapshot a, ElementSnapshot b) =>
+            Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2) + Math.Pow(a.Z - b.Z, 2));
+
+        // 兩個外框是否相接（間距 gap 以內）。舊的快照沒有外框資料：視為相接（整座樓梯算一組）
+        private static bool BoxesTouch(ElementSnapshot a, ElementSnapshot b, double gap)
+        {
+            bool HasBox(ElementSnapshot e) => e.BoxMaxX > e.BoxMinX || e.BoxMaxY > e.BoxMinY;
+            if (!HasBox(a) || !HasBox(b)) return true;
+            return a.BoxMinX <= b.BoxMaxX + gap && b.BoxMinX <= a.BoxMaxX + gap &&
+                   a.BoxMinY <= b.BoxMaxY + gap && b.BoxMinY <= a.BoxMaxY + gap &&
+                   a.BoxMinZ <= b.BoxMaxZ + gap && b.BoxMinZ <= a.BoxMaxZ + gap;
+        }
+
+        // 主體錯了（例如樓梯改了寬度、轉了方向），依附在上面的構件（樓梯扶手）會跟著重新生成而移動：
+        // 這是主體錯誤的結果，不另外算。只合併「位置偏移 / 旋轉錯誤」；
+        // 扶手本身缺少、或扶手高度錯，仍然是學生另外做錯的事，照常各自計算
+        private static List<CompareError> MergeDependents(List<CompareError> errors)
+        {
+            var byStdId = new Dictionary<long, CompareError>();
+            foreach (var e in errors)
+                if (e.StdElementId != 0 && !byStdId.ContainsKey(e.StdElementId)) byStdId[e.StdElementId] = e;
+            var stairs = errors.Where(e => KeyOf(e) == "OST_Stairs").ToList();
+
+            var result = new List<CompareError>(errors);
+            var added = new Dictionary<CompareError, List<CompareError>>();
+            foreach (var e in errors.Where(x => x.Type == ErrorType.WrongPosition || x.Type == ErrorType.WrongRotation))
+            {
+                CompareError parent = null;
+                if (e.HostId != 0 && byStdId.TryGetValue(e.HostId, out var p) && p != e)
+                    parent = p;
+                else if (e.HostId == 0 && KeyOf(e) == "OST_StairsRailing")
+                    parent = stairs.OrderBy(s => Dist(s, e)).FirstOrDefault(s => Dist(s, e) < 3000.0);
+                if (parent == null || !result.Contains(parent)) continue;
+
+                if (!added.TryGetValue(parent, out var list)) { list = new List<CompareError>(); added[parent] = list; }
+                list.Add(e);
+                parent.Related.Add(e);
+                result.Remove(e);
+            }
+            foreach (var kv in added)
+                kv.Key.Detail += $"\uff08\u4f9d\u9644\u5728\u4e0a\u9762\u7684 {kv.Value.Count} \u500b\u69cb\u4ef6\u8ddf\u8457\u6539\u8b8a\uff1a" +
+                                 string.Join("\u3001", kv.Value.Select(r => $"{r.Category} {r.FamilyType}")) + "\uff09";
+            return result;
+        }
+
+
+        // 線型構件沿自身方向的偏移，最多容許這麼多（且不超過構件長度的 40%）
+        private const double ALONG_TOLERANCE = 1000.0;
+
+        // 線型構件的水平方向（單位向量）與水平長度；沒有端點資料（舊快照）或是垂直的構件回傳 false
+        private static bool TryAxis(ElementSnapshot e, out double ux, out double uy, out double len)
+        {
+            ux = uy = len = 0;
+            if (!e.IsLinear) return false;
+            double dx = e.EndX - e.StartX, dy = e.EndY - e.StartY;
+            len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < 1.0) return false;
+            ux = dx / len; uy = dy / len;
+            return true;
+        }
+
+        private static bool IsColumnKey(string key) => key == "OST_StructuralColumns" || key == "\u7d50\u69cb\u67f1";
+        private static bool IsBeamKey(string key) => key == "OST_StructuralFraming" || key == "\u7d50\u69cb\u69cb\u67b6";
+
+        // 柱錯了（移位、尺寸錯），接在這根柱上的梁會跟著被拉動或縮短：算在柱的錯誤裡，不另外算。
+        // 判斷「接在柱上」：標準模型中梁的任一端點，水平距離柱中心 1m 內、高度在柱的範圍附近
+        private static List<CompareError> MergeColumnDrag(List<CompareError> errors, Dictionary<long, ElementSnapshot> stdById)
+        {
+            var cols = errors.Where(e => IsColumnKey(KeyOf(e))).ToList();
+            if (cols.Count == 0) return errors;
+
+            var result = new List<CompareError>(errors);
+            var dragged = new Dictionary<CompareError, List<CompareError>>();
+            foreach (var b in errors.Where(e => IsBeamKey(KeyOf(e)) &&
+                                                (e.Type == ErrorType.WrongPosition || e.Type == ErrorType.WrongRotation)))
+            {
+                if (!stdById.TryGetValue(b.StdElementId, out var beam) || !TryAxis(beam, out _, out _, out _)) continue;
+                var col = cols.FirstOrDefault(c => EndNear(beam, c));
+                if (col == null) continue;
+                if (!dragged.TryGetValue(col, out var list)) { list = new List<CompareError>(); dragged[col] = list; }
+                list.Add(b);
+                col.Related.Add(b);
+                result.Remove(b);
+            }
+            foreach (var kv in dragged)
+            {
+                var beams = kv.Value.Select(b => b.FamilyType).Distinct();
+                kv.Key.Detail += $"\uff08\u9023\u5e36\u5f71\u97ff\u63a5\u5728\u9019\u6839\u67f1\u4e0a\u7684 {kv.Value.Count} \u6839\u6881\uff1a{string.Join("、", beams)}\uff09";
+            }
+            return result;
+        }
+
+        private static bool EndNear(ElementSnapshot beam, CompareError col)
+        {
+            bool Near(double x, double y, double z) =>
+                Math.Sqrt(Math.Pow(x - col.X, 2) + Math.Pow(y - col.Y, 2)) < 1000.0 && Math.Abs(z - col.Z) < 4000.0;
+            return Near(beam.StartX, beam.StartY, beam.StartZ) || Near(beam.EndX, beam.EndY, beam.EndZ);
+        }
+
 
         // 屬於「類型」的參數：改的是類型內容，所有用這個類型的構件會一起改變
         private static readonly HashSet<string> TypeLevelKeys = new HashSet<string>
@@ -647,6 +820,19 @@ namespace RevitGradingTool
                     IsLinear = el.IsLinear,
                     Level = el.Level,
                     HostId = el.HostId,
+                    StartX = el.StartX + offset.X,
+                    StartY = el.StartY + offset.Y,
+                    StartZ = el.StartZ + offset.Z,
+                    EndX = el.EndX + offset.X,
+                    EndY = el.EndY + offset.Y,
+                    EndZ = el.EndZ + offset.Z,
+                    BoxMinX = el.BoxMinX + offset.X,
+                    BoxMinY = el.BoxMinY + offset.Y,
+                    BoxMinZ = el.BoxMinZ + offset.Z,
+                    BoxMaxX = el.BoxMaxX + offset.X,
+                    BoxMaxY = el.BoxMaxY + offset.Y,
+                    BoxMaxZ = el.BoxMaxZ + offset.Z,
+
 
                     Nums = el.Nums,
                     Texts = el.Texts
@@ -706,13 +892,27 @@ namespace RevitGradingTool
 
 
                 var c = candidates[i];
-                double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
                 double zDist = Math.Abs(c.Z - target.Z);
-
-                if (xyDist > tolerance) continue;
                 if (zDist > tolerance) continue;
 
-                double dist = Math.Sqrt(xyDist * xyDist + zDist * zDist);
+                double dist;
+                if (TryAxis(target, out double ux, out double uy, out double len))
+                {
+                    // 線型構件（梁、牆）：沿著自身方向的偏移只是長度變了（例如柱變大、梁端退縮到柱面），
+                    // 不算位置錯誤；只有「側向」偏移超過容許誤差才算
+                    double dx = c.X - target.X, dy = c.Y - target.Y;
+                    double along = Math.Abs(dx * ux + dy * uy);
+                    double perp = Math.Abs(dx * uy - dy * ux);
+                    if (perp > tolerance) continue;
+                    if (along > Math.Max(tolerance, Math.Min(ALONG_TOLERANCE, 0.4 * len))) continue;
+                    dist = Math.Sqrt(perp * perp + zDist * zDist) + 0.1 * along;
+                }
+                else
+                {
+                    double xyDist = Math.Sqrt(Math.Pow(c.X - target.X, 2) + Math.Pow(c.Y - target.Y, 2));
+                    if (xyDist > tolerance) continue;
+                    dist = Math.Sqrt(xyDist * xyDist + zDist * zDist);
+                }
                 if (dist < bestDist)
                 {
                     bestDist = dist;
