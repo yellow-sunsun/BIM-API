@@ -243,12 +243,7 @@ namespace RevitGradingTool
                 ds.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.Set(label);
                 id = ds.Id;
 
-                var ovr = new OverrideGraphicSettings();
-                ovr.SetSurfaceForegroundPatternColor(color);
-                ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-                ovr.SetProjectionLineColor(color);
-                ovr.SetSurfaceTransparency(30);
-                _view.SetElementOverrides(id, ovr);
+                _view.SetElementOverrides(id, ColorOverride(color, 30));
             }
             else
             {
@@ -261,6 +256,7 @@ namespace RevitGradingTool
             }
             _markerIds.Add(id);
             _errorElements[err] = id;
+            HighlightEvent.Log($"  [{_doc.Title}] \u653e\u6a19\u8a18\u65b9\u584a {err.Type} {err.Category} {err.FamilyType} \u2192 \u5143\u4ef6 {id}");
         }
 
         private void ApplyColor(CompareError err, XYZ position, long elementId)
@@ -269,20 +265,34 @@ namespace RevitGradingTool
             Element bestEl = elementId != 0 ? _doc.GetElement(new ElementId(elementId)) : null;
             if (bestEl == null || bestEl.Category?.Name != err.Category)
                 bestEl = FindByPosition(err, position);
-            if (bestEl == null) return;
+            if (bestEl == null)
+            {
+                HighlightEvent.Log($"  [{_doc.Title}] \u627e\u4e0d\u5230\u8981\u6a19\u8272\u7684\u5143\u4ef6\uff1a{err.Type} {err.Category} {err.FamilyType}\uff08Id {elementId}\uff09");
+                return;
+            }
 
-            var ovr = new OverrideGraphicSettings();
-            if (err.Type == ErrorType.Missing || err.Type == ErrorType.Extra)
-                ovr.SetSurfaceForegroundPatternColor(new Color(255, 0, 0));
-            else if (err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition)
-                ovr.SetSurfaceForegroundPatternColor(new Color(255, 255, 0));
-            else
-                ovr.SetSurfaceForegroundPatternColor(new Color(255, 140, 0));
-            ovr.SetSurfaceForegroundPatternId(GetSolidFillId());
-
-            _view.SetElementOverrides(bestEl.Id, ovr);
+            Color color = err.Type == ErrorType.Missing || err.Type == ErrorType.Extra ? new Color(255, 0, 0)
+                        : err.Type == ErrorType.WrongRotation || err.Type == ErrorType.WrongPosition ? new Color(255, 255, 0)
+                        : new Color(255, 140, 0);
+            _view.SetElementOverrides(bestEl.Id, ColorOverride(color, 0));
             _highlightedIds.Add(bestEl.Id);
             _errorElements[err] = bestEl.Id;
+            HighlightEvent.Log($"  [{_doc.Title}] \u6a19\u8272 {err.Type} {err.Category} {err.FamilyType} \u2192 \u5143\u4ef6 {bestEl.Id}");
+        }
+
+        // 標色設定：表面和「切面」都上色（被剖面框切到的構件，從切面看也要有顏色），線條也同色
+        private OverrideGraphicSettings ColorOverride(Color color, int transparency)
+        {
+            var ovr = new OverrideGraphicSettings();
+            ElementId solid = GetSolidFillId();
+            ovr.SetSurfaceForegroundPatternColor(color);
+            ovr.SetSurfaceForegroundPatternId(solid);
+            ovr.SetCutForegroundPatternColor(color);
+            ovr.SetCutForegroundPatternId(solid);
+            ovr.SetCutLineColor(color);
+            ovr.SetProjectionLineColor(color);
+            if (transparency > 0) ovr.SetSurfaceTransparency(transparency);
+            return ovr;
         }
 
         private Element FindByPosition(CompareError err, XYZ position)

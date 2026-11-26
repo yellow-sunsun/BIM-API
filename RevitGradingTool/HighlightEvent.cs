@@ -295,7 +295,7 @@ namespace RevitGradingTool
             try { File.WriteAllText(LogPath, $"=== \u6a19\u8272 {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===\r\n"); } catch { }
         }
 
-        private static void Log(string line)
+        internal static void Log(string line)
         {
             try { File.AppendAllText(LogPath, $"{DateTime.Now:HH:mm:ss.fff} {line}\r\n"); } catch { }
         }
